@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Dict
 from com.fever.rag.chunker.base_chunker import BaseChunker
 
 
@@ -30,3 +30,27 @@ class FixedTokenChunker(BaseChunker):
             start += (self.size - self.overlap)
 
         return chunks
+
+    def get_metadata(self, article_id: str, chunk_index: int, chunk_text: str) -> Dict:
+        """
+        Generate metadata for a fixed token chunk.
+
+        Args:
+            article_id: Wikipedia article ID from FEVER dataset
+            chunk_index: Index of this chunk within the article
+            chunk_text: The actual text content of the chunk
+
+        Returns:
+            Dictionary containing metadata for retrieval evaluation
+        """
+        return {
+            'article_id': article_id,
+            'chunk_index': chunk_index,
+            'chunk_text': chunk_text,
+            'chunk_type': 'fixed_token',
+            'chunk_size': len(chunk_text),
+            'token_count': len(chunk_text.split()),
+            'target_token_size': self.size,
+            'overlap_tokens': self.overlap,
+            'cleaned': bool(chunk_text.strip())
+        }

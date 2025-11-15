@@ -167,8 +167,8 @@ class VectorDBBuilder:
                         article = json.loads(line.strip())
 
                         # Skip empty entries
-                        if not article.get('id') or not article.get('text'):
-                            continue
+                        # if not article.get('id') or not article.get('text'):
+                        #     continue
 
                         total_articles += 1
 
@@ -217,11 +217,16 @@ class VectorDBBuilder:
         print(f"  Max files: {self.max_files or 'All'}")
 
         # Get wiki files
-        wiki_path = Path(self.wiki_dir)
-        wiki_files = sorted(wiki_path.glob("wiki-*.jsonl"))
-        if self.max_files:
-            wiki_files = wiki_files[:self.max_files]
-        print(f"\nWill process {len(wiki_files)} wiki files")
+        try:
+            wiki_path = Path(self.wiki_dir)
+            if not wiki_path.exists() or not wiki_path.is_dir():
+                raise ValueError(f"Wiki directory does not exist: {self.wiki_dir}")
+            wiki_files = sorted(wiki_path.glob("wiki-*.jsonl"))
+            if self.max_files:
+                wiki_files = wiki_files[:self.max_files]
+            print(f"\nWill process {len(wiki_files)} wiki files")
+        except Exception as e:
+            raise ValueError(f"Error accessing wiki directory: {e}")
 
         # Process each embedding model
         for embedding_model_name in self.embedding_models:
