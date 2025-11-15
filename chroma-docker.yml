@@ -7,8 +7,7 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - ./chroma_data:/chroma/chroma
-      - ./chroma_index:/index_data
+      - ./chroma_data:/data
     environment:
       - ANONYMIZED_TELEMETRY=False
       - ALLOW_RESET=True

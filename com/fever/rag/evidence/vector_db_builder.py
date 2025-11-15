@@ -6,6 +6,9 @@ from com.fever.rag.utils.text_cleaner import TextCleaner
 from sentence_transformers import SentenceTransformer
 from pathlib import Path
 import json
+from tqdm import tqdm
+import torch
+
 
 class VectorDBBuilder:
     """Main class for building vector databases with multiple configurations."""
@@ -36,6 +39,20 @@ class VectorDBBuilder:
         self.embedding_models: List[str] = []
         self.chunkers: List[BaseChunker] = []
         self.nlp = None
+        self.device = self._get_device()
+
+    def _get_device(self) -> str:
+        """Automatically detect best available device."""
+        if torch.cuda.is_available():
+            device = "cuda"
+            print(f"Using CUDA GPU: {torch.cuda.get_device_name(0)}")
+        elif torch.backends.mps.is_available():
+            device = "mps"
+            print("Using Apple MPS (Metal Performance Shaders)")
+        else:
+            device = "cpu"
+            print("Using CPU")
+        return device
 
     def add_embedding_model(self, model_name: str):
         """Add an embedding model to process."""
@@ -108,7 +125,6 @@ class VectorDBBuilder:
                 tokenizer=embedding_model.tokenizer if hasattr(embedding_model, 'tokenizer') else None
             )
         except Exception as e:
-            print(f"\n  [WARNING] Error chunking article {article_id}: {e}")
             return []
 
         # Create chunk-metadata tuples
@@ -133,7 +149,11 @@ class VectorDBBuilder:
         metadatas = [chunk[1] for chunk in chunks_batch]
 
         # Generate embeddings
-        embeddings = embedding_model.encode(texts, show_progress_bar=False)
+        embeddings = embedding_model.encode(
+            texts,
+            show_progress_bar=False,
+            device=self.device
+        )
 
         # Generate unique IDs
         ids = [f"{meta['article_id']}_chunk_{meta['chunk_index']}" for meta in metadatas]
@@ -145,6 +165,11 @@ class VectorDBBuilder:
             metadatas=metadatas,
             ids=ids
         )
+
+    def _count_lines_in_file(self, file_path: Path) -> int:
+        """Count number of lines in a file efficiently."""
+        with open(file_path, 'r', encoding='utf-8') as f:
+            return sum(1 for _ in f)
 
     def _process_files_for_config(
             self,
@@ -160,15 +185,16 @@ class VectorDBBuilder:
         total_chunks = 0
         cleaning_issues = 0
 
-        for file_path in wiki_files:
+        # Outer progress bar for files
+        for file_path in tqdm(wiki_files, desc="    Files", position=0, leave=True):
+            # Count lines for inner progress bar
+            num_lines = self._count_lines_in_file(file_path)
+
             with open(file_path, 'r', encoding='utf-8') as f:
-                for line in f:
+                # Inner progress bar for articles within file
+                for line in tqdm(f, total=num_lines, desc=f"      {file_path.name}", position=1, leave=False):
                     try:
                         article = json.loads(line.strip())
-
-                        # Skip empty entries
-                        # if not article.get('id') or not article.get('text'):
-                        #     continue
 
                         total_articles += 1
 
@@ -215,6 +241,7 @@ class VectorDBBuilder:
         print(f"  Total collections: {len(self.embedding_models) * len(self.chunkers)}")
         print(f"  Batch size: {self.batch_size}")
         print(f"  Max files: {self.max_files or 'All'}")
+        print(f"  Device: {self.device}")
 
         # Get wiki files
         try:
@@ -236,7 +263,7 @@ class VectorDBBuilder:
 
             # Load embedding model
             print(f"  Loading embedding model...")
-            embedding_model = SentenceTransformer(embedding_model_name)
+            embedding_model = SentenceTransformer(embedding_model_name, device=self.device)
 
             # Connect to ChromaDB
             print(f"  Connecting to ChromaDB...")
@@ -267,7 +294,6 @@ class VectorDBBuilder:
                 )
 
                 # Process files
-                print(f"    Processing {len(wiki_files)} files...")
                 total_articles, total_chunks, cleaning_issues = self._process_files_for_config(
                     embedding_model_name,
                     embedding_model,
@@ -291,4 +317,3 @@ class VectorDBBuilder:
         print(f"\nAll Collections ({len(all_collections)}):")
         for collection in sorted(all_collections, key=lambda x: x.name):
             print(f"  {collection.name:40s}: {collection.count():,} documents")
-
