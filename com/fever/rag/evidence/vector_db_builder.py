@@ -152,7 +152,8 @@ class VectorDBBuilder:
         embeddings = embedding_model.encode(
             texts,
             show_progress_bar=False,
-            device=self.device
+            device=self.device,
+            batch_size=64,  # Optimize this based on your GPU memory
         )
 
         # Generate unique IDs
@@ -173,7 +174,6 @@ class VectorDBBuilder:
 
     def _process_files_for_config(
             self,
-            embedding_model_name: str,
             embedding_model: SentenceTransformer,
             chunker: BaseChunker,
             collection,
@@ -295,7 +295,6 @@ class VectorDBBuilder:
 
                 # Process files
                 total_articles, total_chunks, cleaning_issues = self._process_files_for_config(
-                    embedding_model_name,
                     embedding_model,
                     chunker,
                     collection,

@@ -13,9 +13,9 @@ def parse_args():
                         help="Directory containing Wikipedia pages")
     parser.add_argument("--chroma_host", type=str, default = "localhost")
     parser.add_argument("--chroma_port", type=int, default = 8000)
-    parser.add_argument("--batch_size", type=int, default = 100,
+    parser.add_argument("--batch_size", type=int, default = 500,
                         help="Number of documents to process in each batch")
-    parser.add_argument("--max_files", type=int, default = 1,
+    parser.add_argument("--max_files", type=int, default = 2,
                         help="Maximum number of wiki files to process (for testing). Set to None to process all files.")
     parser.add_argument("--reset_chroma", type=bool, default=True,
                         help="To delete all previous entries if existing with same name is found")
