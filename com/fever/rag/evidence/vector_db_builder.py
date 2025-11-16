@@ -1,6 +1,6 @@
 from typing import Optional, List, Tuple, Dict
-import chromadb
-from chromadb import Settings
+from qdrant_client import QdrantClient
+from qdrant_client.models import Distance, VectorParams, PointStruct, OptimizersConfigDiff
 from com.fever.rag.chunker.base_chunker import BaseChunker
 from com.fever.rag.utils.text_cleaner import TextCleaner
 from sentence_transformers import SentenceTransformer
@@ -8,38 +8,54 @@ from pathlib import Path
 import json
 from tqdm import tqdm
 import torch
+import time
 
 
 class VectorDBBuilder:
-    """Main class for building vector databases with multiple configurations."""
+    """Main class for building vector databases with Qdrant."""
 
     def __init__(
             self,
             wiki_dir: str = "wiki-pages",
-            chroma_host: str = "localhost",
-            chroma_port: int = 8000,
+            qdrant_host: str = "localhost",
+            qdrant_port: int = 6333,
             batch_size: int = 100,
-            max_files: Optional[int] = None
+            max_files: Optional[int] = None,
+            encode_batch_size: int = 128,
+            use_grpc: bool = True  # gRPC is faster than HTTP
     ):
         """
-        Initialize the Vector DB Builder.
+        Initialize the Vector DB Builder with Qdrant.
 
         Args:
             wiki_dir: Directory containing Wikipedia JSONL files
-            chroma_host: ChromaDB host
-            chroma_port: ChromaDB port
+            qdrant_host: Qdrant host
+            qdrant_port: Qdrant port (6333 for HTTP, 6334 for gRPC)
             batch_size: Number of chunks to batch before inserting
             max_files: Limit number of files to process (None = all)
+            encode_batch_size: Batch size for embedding generation
+            use_grpc: Use gRPC for faster communication (recommended)
         """
         self.wiki_dir = wiki_dir
-        self.chroma_host = chroma_host
-        self.chroma_port = chroma_port
+        self.qdrant_host = qdrant_host
+        self.qdrant_port = qdrant_port if not use_grpc else 6334
         self.batch_size = batch_size
         self.max_files = max_files
+        self.encode_batch_size = encode_batch_size
+        self.use_grpc = use_grpc
         self.embedding_models: List[str] = []
         self.chunkers: List[BaseChunker] = []
-        self.nlp = None
         self.device = self._get_device()
+
+        # Performance tracking
+        self.timing_stats = {
+            'embed_time': 0.0,
+            'insert_time': 0.0,
+            'process_time': 0.0,
+            'total_batches': 0,
+            'insert_times': [],
+            'collection_sizes': []
+        }
 
     def _get_device(self) -> str:
         """Automatically detect best available device."""
@@ -66,7 +82,6 @@ class VectorDBBuilder:
 
     def _get_collection_name(self, embedding_model: str, chunker: BaseChunker) -> str:
         """Generate collection name from model and chunker."""
-        # Shorten embedding model name
         model_short = embedding_model.split('/')[-1].split('-')[0].lower()
         if 'minilm' in embedding_model.lower():
             model_short = 'minilm'
@@ -77,14 +92,23 @@ class VectorDBBuilder:
 
         return f"{model_short}_{chunker.name}_chunks"
 
-    def _connect_to_chroma(self) -> chromadb.HttpClient:
-        """Connect to ChromaDB."""
-        client = chromadb.HttpClient(
-            host=self.chroma_host,
-            port=self.chroma_port,
-            settings=Settings(anonymized_telemetry=False)
-        )
-        client.heartbeat()
+    def _connect_to_qdrant(self) -> QdrantClient:
+        """Connect to Qdrant."""
+        if self.use_grpc:
+            client = QdrantClient(
+                host=self.qdrant_host,
+                port=self.qdrant_port,
+                prefer_grpc=True
+            )
+        else:
+            client = QdrantClient(
+                host=self.qdrant_host,
+                port=self.qdrant_port
+            )
+
+        # Test connection
+        collections = client.get_collections()
+        print(f"    Connected to Qdrant ({len(collections.collections)} existing collections)")
         return client
 
     def _parse_article_lines(self, lines_str: str) -> List[str]:
@@ -117,7 +141,6 @@ class VectorDBBuilder:
         if not sentences or not full_text:
             return []
 
-        # Get chunks using the chunker
         try:
             chunks = chunker.chunk(
                 text=full_text,
@@ -127,7 +150,6 @@ class VectorDBBuilder:
         except Exception as e:
             return []
 
-        # Create chunk-metadata tuples
         results = [
             (chunk, chunker.get_metadata(article_id, i, chunk))
             for i, chunk in enumerate(chunks)
@@ -137,35 +159,74 @@ class VectorDBBuilder:
 
     def _batch_insert(
             self,
-            collection,
+            client: QdrantClient,
+            collection_name: str,
             chunks_batch: List[Tuple[str, Dict]],
-            embedding_model: SentenceTransformer
-    ):
-        """Insert a batch of chunks into ChromaDB."""
+            embedding_model: SentenceTransformer,
+            start_id: int,
+            embedding_model_name: str = "",
+            chunker_name: str = ""
+    ) -> int:
+        """Insert a batch of chunks into Qdrant with performance tracking."""
         if not chunks_batch:
-            return
+            return start_id
 
+        batch_size = len(chunks_batch)
         texts = [chunk[0] for chunk in chunks_batch]
         metadatas = [chunk[1] for chunk in chunks_batch]
 
-        # Generate embeddings
+        # Time embedding generation
+        t_embed = time.time()
         embeddings = embedding_model.encode(
             texts,
             show_progress_bar=False,
             device=self.device,
-            batch_size=64,  # Optimize this based on your GPU memory
+            batch_size=self.encode_batch_size,
+            convert_to_numpy=True,
         )
+        embed_duration = time.time() - t_embed
+        self.timing_stats['embed_time'] += embed_duration
 
-        # Generate unique IDs
-        ids = [f"{meta['article_id']}_chunk_{meta['chunk_index']}" for meta in metadatas]
+        # Prepare points for Qdrant
+        points = []
+        for i, (embedding, metadata) in enumerate(zip(embeddings, metadatas)):
+            point = PointStruct(
+                id=start_id + i,
+                vector=embedding.tolist(),
+                payload={
+                    **metadata,
+                    "text": texts[i],  # Store the actual text in payload
+                    "embedding_model": embedding_model_name,  # Store model info
+                    "chunking_method": chunker_name  # Store chunker info
+                }
+            )
+            points.append(point)
 
-        # Insert
-        collection.add(
-            embeddings=embeddings.tolist(),
-            documents=texts,
-            metadatas=metadatas,
-            ids=ids
+        # Time database insert
+        t_insert = time.time()
+        client.upsert(
+            collection_name=collection_name,
+            points=points,
+            wait=False  # Async insert for better performance
         )
+        insert_duration = time.time() - t_insert
+
+        # Track performance
+        self.timing_stats['insert_time'] += insert_duration
+        self.timing_stats['insert_times'].append(insert_duration)
+        self.timing_stats['total_batches'] += 1
+
+        # Get collection size (sampling to avoid overhead)
+        if self.timing_stats['total_batches'] % 10 == 0:
+            info = client.get_collection(collection_name)
+            self.timing_stats['collection_sizes'].append(info.points_count)
+
+        # Log slow inserts
+        if insert_duration > 1.0:
+            print(f"\n      [SLOW INSERT] Batch {self.timing_stats['total_batches']}: "
+                  f"{insert_duration:.2f}s for {batch_size} chunks")
+
+        return start_id + batch_size
 
     def _count_lines_in_file(self, file_path: Path) -> int:
         """Count number of lines in a file efficiently."""
@@ -175,8 +236,10 @@ class VectorDBBuilder:
     def _process_files_for_config(
             self,
             embedding_model: SentenceTransformer,
+            embedding_model_name: str,
             chunker: BaseChunker,
-            collection,
+            client: QdrantClient,
+            collection_name: str,
             wiki_files: List[Path]
     ):
         """Process Wikipedia files for one embedding model + chunker combination."""
@@ -184,32 +247,43 @@ class VectorDBBuilder:
         total_articles = 0
         total_chunks = 0
         cleaning_issues = 0
+        current_id = 0
 
-        # Outer progress bar for files
+        # Reset timing stats
+        self.timing_stats = {
+            'embed_time': 0.0,
+            'insert_time': 0.0,
+            'process_time': 0.0,
+            'total_batches': 0,
+            'insert_times': [],
+            'collection_sizes': []
+        }
+
+        t_start_all = time.time()
+
         for file_path in tqdm(wiki_files, desc="    Files", position=0, leave=True):
-            # Count lines for inner progress bar
             num_lines = self._count_lines_in_file(file_path)
 
             with open(file_path, 'r', encoding='utf-8') as f:
-                # Inner progress bar for articles within file
                 for line in tqdm(f, total=num_lines, desc=f"      {file_path.name}", position=1, leave=False):
                     try:
+                        t_proc = time.time()
                         article = json.loads(line.strip())
-
                         total_articles += 1
 
-                        # Process article
                         chunks = self._process_article(article, chunker, embedding_model)
-
-                        # Track cleaning issues
                         cleaning_issues += sum(1 for _, meta in chunks if not meta.get('cleaned', True))
 
                         batch.extend(chunks)
                         total_chunks += len(chunks)
 
-                        # Insert batch if full
+                        self.timing_stats['process_time'] += time.time() - t_proc
+
                         if len(batch) >= self.batch_size:
-                            self._batch_insert(collection, batch, embedding_model)
+                            current_id = self._batch_insert(
+                                client, collection_name, batch, embedding_model, current_id,
+                                embedding_model_name, chunker.name
+                            )
                             batch = []
 
                     except json.JSONDecodeError:
@@ -219,31 +293,78 @@ class VectorDBBuilder:
 
         # Insert remaining
         if batch:
-            self._batch_insert(collection, batch, embedding_model)
+            current_id = self._batch_insert(
+                client, collection_name, batch, embedding_model, current_id,
+                embedding_model_name, chunker.name
+            )
+
+        # Wait for all async operations to complete
+        print(f"\n    Waiting for final inserts to complete...")
+        time.sleep(2)  # Give time for async operations
+
+        total_time = time.time() - t_start_all
+
+        # Analyze performance
+        self._print_performance_analysis(total_time, total_chunks)
 
         return total_articles, total_chunks, cleaning_issues
 
-    def build(self, reset: bool = True):
-        """
-        Build all vector databases.
+    def _print_performance_analysis(self, total_time: float, total_chunks: int):
+        """Print detailed performance analysis."""
+        print(f"\n    Performance Breakdown:")
+        print(f"      Total time: {total_time:.2f}s")
+        print(f"      Embedding: {self.timing_stats['embed_time']:.2f}s "
+              f"({self.timing_stats['embed_time'] / total_time * 100:.1f}%)")
+        print(f"      DB Insert: {self.timing_stats['insert_time']:.2f}s "
+              f"({self.timing_stats['insert_time'] / total_time * 100:.1f}%)")
+        print(f"      Processing: {self.timing_stats['process_time']:.2f}s "
+              f"({self.timing_stats['process_time'] / total_time * 100:.1f}%)")
 
-        Args:
-            reset: Whether to delete existing collections before building
-        """
+        overhead = total_time - self.timing_stats['embed_time'] - \
+                   self.timing_stats['insert_time'] - self.timing_stats['process_time']
+        print(f"      Overhead: {overhead:.2f}s ({overhead / total_time * 100:.1f}%)")
+
+        print(f"\n    Batch Statistics:")
+        print(f"      Total batches: {self.timing_stats['total_batches']}")
+        print(f"      Avg chunks/batch: {total_chunks / max(self.timing_stats['total_batches'], 1):.1f}")
+
+        if self.timing_stats['insert_times']:
+            avg_insert = sum(self.timing_stats['insert_times']) / len(self.timing_stats['insert_times'])
+            print(f"      Avg insert time/batch: {avg_insert:.3f}s")
+
+            # Analyze insert time degradation
+            if len(self.timing_stats['insert_times']) >= 10:
+                first_10_avg = sum(self.timing_stats['insert_times'][:10]) / 10
+                last_10_avg = sum(self.timing_stats['insert_times'][-10:]) / 10
+                slowdown_pct = ((last_10_avg - first_10_avg) / first_10_avg * 100) if first_10_avg > 0 else 0
+
+                print(f"\n    Insert Performance Degradation:")
+                print(f"      First 10 batches avg: {first_10_avg:.3f}s")
+                print(f"      Last 10 batches avg: {last_10_avg:.3f}s")
+                print(f"      Slowdown: {slowdown_pct:+.1f}%")
+
+                if slowdown_pct > 50:
+                    print(f"      ⚠️  WARNING: Significant insert slowdown detected!")
+                elif slowdown_pct < 10:
+                    print(f"      ✓ Excellent: Minimal performance degradation")
+
+    def build(self, reset: bool = True):
+        """Build all vector databases."""
         print("=" * 70)
-        print("HIERARCHICAL CHROMADB VECTOR DATABASE BUILDER")
+        print("QDRANT VECTOR DATABASE BUILDER")
         print("=" * 70)
         print(f"\nConfiguration:")
         print(f"  Wiki directory: {self.wiki_dir}")
-        print(f"  ChromaDB: {self.chroma_host}:{self.chroma_port}")
+        print(f"  Qdrant: {self.qdrant_host}:{self.qdrant_port}")
+        print(f"  Protocol: {'gRPC' if self.use_grpc else 'HTTP'}")
         print(f"  Embedding models: {len(self.embedding_models)}")
         print(f"  Chunking methods: {len(self.chunkers)}")
         print(f"  Total collections: {len(self.embedding_models) * len(self.chunkers)}")
-        print(f"  Batch size: {self.batch_size}")
+        print(f"  Document batch size: {self.batch_size}")
+        print(f"  Encoding batch size: {self.encode_batch_size}")
         print(f"  Max files: {self.max_files or 'All'}")
         print(f"  Device: {self.device}")
 
-        # Get wiki files
         try:
             wiki_path = Path(self.wiki_dir)
             if not wiki_path.exists() or not wiki_path.is_dir():
@@ -255,64 +376,70 @@ class VectorDBBuilder:
         except Exception as e:
             raise ValueError(f"Error accessing wiki directory: {e}")
 
-        # Process each embedding model
         for embedding_model_name in self.embedding_models:
             print("\n" + "=" * 70)
             print(f"PROCESSING: {embedding_model_name}")
             print("=" * 70)
 
-            # Load embedding model
             print(f"  Loading embedding model...")
             embedding_model = SentenceTransformer(embedding_model_name, device=self.device)
+            vector_size = embedding_model.get_sentence_embedding_dimension()
 
-            # Connect to ChromaDB
-            print(f"  Connecting to ChromaDB...")
-            client = self._connect_to_chroma()
+            print(f"  Connecting to Qdrant...")
+            client = self._connect_to_qdrant()
 
-            # Process each chunker
             for chunker in self.chunkers:
                 collection_name = self._get_collection_name(embedding_model_name, chunker)
 
                 print(f"\n  [{chunker.name}] Creating collection: {collection_name}")
 
-                # Reset if requested
                 if reset:
                     try:
-                        client.delete_collection(name=collection_name)
+                        client.delete_collection(collection_name=collection_name)
                         print(f"    Deleted existing collection")
                     except:
                         pass
 
-                # Create collection
-                collection = client.get_or_create_collection(
-                    name=collection_name,
-                    metadata={
-                        "embedding_model": embedding_model_name,
-                        "chunking_method": chunker.name,
-                        **chunker.config
-                    }
+                # Create collection with optimized settings
+                # Note: Collection metadata stored in payload schema, not collection level
+                client.create_collection(
+                    collection_name=collection_name,
+                    vectors_config=VectorParams(
+                        size=vector_size,
+                        distance=Distance.COSINE
+                    ),
+                    optimizers_config=OptimizersConfigDiff(
+                        indexing_threshold=20000,  # Start indexing after 20k points
+                        memmap_threshold=50000  # Use memory-mapped storage for large collections
+                    )
                 )
 
-                # Process files
+                print(f"    Collection metadata: model={embedding_model_name}, chunker={chunker.name}")
+
                 total_articles, total_chunks, cleaning_issues = self._process_files_for_config(
                     embedding_model,
+                    embedding_model_name,
                     chunker,
-                    collection,
+                    client,
+                    collection_name,
                     wiki_files
                 )
 
-                print(f"    ✓ Complete: {total_chunks:,} chunks from {total_articles:,} articles")
-                print(f"    Cleaning issues: {cleaning_issues:,}")
-                print(f"    Final count: {collection.count():,} documents")
+                # Get final count
+                collection_info = client.get_collection(collection_name)
 
-        # Final summary
+                print(f"\n    ✓ Complete: {total_chunks:,} chunks from {total_articles:,} articles")
+                print(f"    Cleaning issues: {cleaning_issues:,}")
+                print(f"    Final count: {collection_info.points_count:,} documents")
+
         print("\n" + "=" * 70)
         print("BUILD COMPLETE!")
         print("=" * 70)
 
-        client = self._connect_to_chroma()
-        all_collections = client.list_collections()
+        client = self._connect_to_qdrant()
+        all_collections = client.get_collections().collections
 
         print(f"\nAll Collections ({len(all_collections)}):")
         for collection in sorted(all_collections, key=lambda x: x.name):
-            print(f"  {collection.name:40s}: {collection.count():,} documents")
+            info = client.get_collection(collection.name)
+            print(f"  {collection.name:40s}: {info.points_count:,} documents")
