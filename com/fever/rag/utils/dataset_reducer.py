@@ -150,62 +150,75 @@ class FEVERDatasetReducer:
         print(f"✓ Found {evidence_count} evidence references")
         print(f"✓ Extracted {len(self.required_evidence_ids)} unique document IDs")
 
-    def filter_evidence_file(self, evidence_filepath: str, output_filename: str = "filtered_evidence.jsonl"):
+    def filter_all_evidence_files(self, evidence_filepaths: List[str],
+                                  output_filename: str = "filtered_evidence.jsonl"):
         """
-        Filter evidence file to only include documents referenced in the reduced dataset,
-        plus additional random documents as distractors.
+        Filter ALL evidence files to only include documents referenced in the reduced dataset,
+        plus additional random documents as distractors (globally, not per file).
 
         Args:
-            evidence_filepath: Path to the original evidence file
+            evidence_filepaths: List of paths to all evidence files
             output_filename: Name for the filtered evidence file
         """
-        print(f"\nFiltering evidence file: {evidence_filepath}")
+        print(f"\nFiltering {len(evidence_filepaths)} evidence files...")
         print(f"Looking for {len(self.required_evidence_ids)} unique documents...")
 
         filtered_evidence = []
         random_candidates = []
         total_docs = 0
+        non_required_count = 0
 
-        try:
-            with open(evidence_filepath, 'r', encoding='utf-8') as f:
-                for line in f:
-                    total_docs += 1
-                    doc = json.loads(line.strip())
+        # Process ALL evidence files
+        for evidence_filepath in evidence_filepaths:
+            print(f"  Reading: {os.path.basename(evidence_filepath)}")
+            try:
+                with open(evidence_filepath, 'r', encoding='utf-8') as f:
+                    for line in f:
+                        total_docs += 1
+                        doc = json.loads(line.strip())
 
-                    # Check if this document is needed
-                    doc_id = doc.get('id', '').strip().lower()
+                        # Check if this document is needed
+                        doc_id = doc.get('id', '').strip().lower()
 
-                    if doc_id in self.required_evidence_ids:
-                        filtered_evidence.append(doc)
-                    else:
-                        # Store as potential random distractor
-                        random_candidates.append(doc)
+                        if doc_id in self.required_evidence_ids:
+                            filtered_evidence.append(doc)
+                        else:
+                            non_required_count += 1
+                            # Reservoir sampling to keep memory usage bounded
+                            if len(random_candidates) < self.additional_random_docs:
+                                random_candidates.append(doc)
+                            else:
+                                # Random replacement with decreasing probability
+                                replace_idx = random.randint(0, non_required_count - 1)
+                                if replace_idx < self.additional_random_docs:
+                                    random_candidates[replace_idx] = doc
 
-                    if total_docs % 100000 == 0:
-                        print(f"  Processed {total_docs} documents, found {len(filtered_evidence)} relevant...")
+                        if total_docs % 100000 == 0:
+                            print(f"    Processed {total_docs} documents, found {len(filtered_evidence)} relevant...")
 
-            print(f"✓ Processed {total_docs} total documents")
-            print(f"✓ Found {len(filtered_evidence)} relevant documents")
+            except FileNotFoundError:
+                print(f"  ❌ File not found: {evidence_filepath}")
 
-            # Add random distractor documents
-            if self.additional_random_docs > 0 and random_candidates:
-                num_to_add = min(self.additional_random_docs, len(random_candidates))
-                random_docs = random.sample(random_candidates, num_to_add)
-                filtered_evidence.extend(random_docs)
-                print(f"✓ Added {len(random_docs)} random distractor documents")
+        print(f"\n✓ Processed {total_docs} total documents across all files")
+        print(f"✓ Found {len(filtered_evidence)} relevant documents")
 
-            # Shuffle the final evidence set
-            random.shuffle(filtered_evidence)
+        # Add random distractor documents (exactly self.additional_random_docs)
+        if self.additional_random_docs > 0 and random_candidates:
+            num_to_add = min(self.additional_random_docs, len(random_candidates))
+            filtered_evidence.extend(random_candidates[:num_to_add])
+            print(f"✓ Added {num_to_add} random distractor documents")
 
-            self.save_jsonl(filtered_evidence, output_filename)
+        # Shuffle the final evidence set
+        random.shuffle(filtered_evidence)
 
-            coverage = len([d for d in filtered_evidence if d.get('id', '') in self.required_evidence_ids]) / len(
-                self.required_evidence_ids) * 100
-            print(f"✓ Coverage: {coverage:.2f}% of required evidence found")
-            print(f"✓ Total documents in filtered evidence: {len(filtered_evidence)}")
+        self.save_jsonl(filtered_evidence, output_filename)
 
-        except FileNotFoundError:
-            print(f"❌ Evidence file not found: {evidence_filepath}")
+        coverage = (len(filtered_evidence) - num_to_add) / len(self.required_evidence_ids) * 100
+        print(f"✓ Coverage: {coverage:.2f}% of required evidence found")
+        print(f"✓ Total documents in filtered evidence: {len(filtered_evidence)}")
+        print(f"  - Required evidence: {len(filtered_evidence) - num_to_add}")
+        print(f"  - Random distractors: {num_to_add}")
+
 
     def process_dataset(self,
                         train_file: str,
@@ -262,13 +275,20 @@ class FEVERDatasetReducer:
             self.save_jsonl(reduced_test, "paper_test.jsonl")
             self.extract_evidence_ids(reduced_test)
 
-        # Process evidence files
+            # Process evidence files
         if evidence_files:
             print("\n" + "=" * 70)
             print("Processing Evidence Files")
             print("=" * 70)
-            for evidence_file in evidence_files:
-                self.filter_evidence_file(evidence_file)
+
+            # Clear output file if it exists
+            output_path = os.path.join(self.output_dir, "filtered_evidence.jsonl")
+            if os.path.exists(output_path):
+                os.remove(output_path)
+                print(f"✓ Cleared existing evidence file")
+
+            # Process all evidence files at once
+            self.filter_all_evidence_files(evidence_files)
 
         print("\n" + "=" * 70)
         print("Summary")
@@ -298,7 +318,7 @@ if __name__ == "__main__":
         test_size=2000,
         output_dir=BASE_DIR + "reduced_fever_data",
         random_seed=42,
-        additional_random_docs=1000
+        additional_random_docs=50000
     )
 
     evidence = get_all_file_paths(BASE_DIR + "wiki-pages/wiki-pages")
