@@ -2,12 +2,12 @@ from typing import Optional, List, Tuple, Dict
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams, PointStruct, OptimizersConfigDiff
 from com.fever.rag.chunker.base_chunker import BaseChunker
+from com.fever.rag.utils.DataHelper import _get_device
 from com.fever.rag.utils.text_cleaner import TextCleaner
 from sentence_transformers import SentenceTransformer
 from pathlib import Path
 import json
 from tqdm import tqdm
-import torch
 import time
 
 
@@ -45,7 +45,7 @@ class VectorDBBuilder:
         self.use_grpc = use_grpc
         self.embedding_models: List[str] = []
         self.chunkers: List[BaseChunker] = []
-        self.device = self._get_device()
+        self.device = _get_device()
 
         # Performance tracking
         self.timing_stats = {
@@ -56,19 +56,6 @@ class VectorDBBuilder:
             'insert_times': [],
             'collection_sizes': []
         }
-
-    def _get_device(self) -> str:
-        """Automatically detect best available device."""
-        if torch.cuda.is_available():
-            device = "cuda"
-            print(f"Using CUDA GPU: {torch.cuda.get_device_name(0)}")
-        elif torch.backends.mps.is_available():
-            device = "mps"
-            print("Using Apple MPS (Metal Performance Shaders)")
-        else:
-            device = "cpu"
-            print("Using CPU")
-        return device
 
     def add_embedding_model(self, model_name: str):
         """Add an embedding model to process."""
@@ -142,17 +129,15 @@ class VectorDBBuilder:
             return []
 
         try:
-            chunks = chunker.chunk(
-                text=full_text,
-                sentences=sentences,
+            chunks_with_ids = chunker.chunk(text=full_text, sentences=sentences,
                 tokenizer=embedding_model.tokenizer if hasattr(embedding_model, 'tokenizer') else None
             )
         except Exception as e:
             return []
 
         results = [
-            (chunk, chunker.get_metadata(article_id, i, chunk))
-            for i, chunk in enumerate(chunks)
+            (chunk_text, chunker.get_metadata(article_id, i, chunk_text, sentence_ids=sentence_ids))
+            for i, (chunk_text, sentence_ids) in enumerate(chunks_with_ids)
         ]
 
         return results
