@@ -29,7 +29,7 @@ def parse_args():
                         help="Batch size for embedding generation (higher = faster but more memory)")
 
     # Processing configuration
-    parser.add_argument("--max_files", type=int, default=10,
+    parser.add_argument("--max_files", type=int, default=200,
                         help="Maximum number of wiki files to process (for testing). Set to None for all files.")
     parser.add_argument("--reset", type=bool, default=True,
                         help="Delete existing collections with same name")

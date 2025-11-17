@@ -22,7 +22,7 @@ class VectorDBBuilder:
             batch_size: int = 100,
             max_files: Optional[int] = None,
             encode_batch_size: int = 128,
-            use_grpc: bool = True  # gRPC is faster than HTTP
+            use_grpc: bool = True
     ):
         """
         Initialize the Vector DB Builder with Qdrant.
