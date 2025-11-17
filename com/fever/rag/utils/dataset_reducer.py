@@ -282,7 +282,7 @@ class FEVERDatasetReducer:
             print("=" * 70)
 
             # Clear output file if it exists
-            output_path = os.path.join(self.output_dir, "filtered_evidence.jsonl")
+            output_path = os.path.join(self.output_dir, "wiki/filtered_evidence.jsonl")
             if os.path.exists(output_path):
                 os.remove(output_path)
                 print(f"✓ Cleared existing evidence file")

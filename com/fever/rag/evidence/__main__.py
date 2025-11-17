@@ -11,7 +11,7 @@ def parse_args():
     )
     # Data configuration
     parser.add_argument("--wiki_dir", type=str,
-                        default="../../../../dataset/wiki-pages/wiki-pages",
+                        default="../../../../dataset/reduced_fever_data/wiki",
                         help="Directory containing Wikipedia pages")
 
     # Qdrant configuration

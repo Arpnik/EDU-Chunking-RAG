@@ -16,7 +16,7 @@ class VectorDBBuilder:
 
     def __init__(
             self,
-            wiki_dir: str = "wiki-pages",
+            wiki_dir: str = "wiki",
             qdrant_host: str = "localhost",
             qdrant_port: int = 6333,
             batch_size: int = 100,
@@ -369,7 +369,7 @@ class VectorDBBuilder:
             wiki_path = Path(self.wiki_dir)
             if not wiki_path.exists() or not wiki_path.is_dir():
                 raise ValueError(f"Wiki directory does not exist: {self.wiki_dir}")
-            wiki_files = sorted(wiki_path.glob("wiki-*.jsonl"))
+            wiki_files = sorted(wiki_path.glob("*.jsonl"))
             if self.max_files:
                 wiki_files = wiki_files[:self.max_files]
             print(f"\nWill process {len(wiki_files)} wiki files")
