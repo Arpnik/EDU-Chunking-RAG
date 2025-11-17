@@ -26,7 +26,7 @@ class BaseChunker(ABC):
         )
 
     @abstractmethod
-    def get_metadata(self, article_id: str, chunk_index: int, chunk_text: str) -> Dict:
+    def get_metadata(self, article_id: str, chunk_index: int, chunk_text: str, sentence_ids: List[int] = None) -> Dict:
         """Generate metadata for a chunk."""
         raise NotImplementedError(
             f"Chunker '{self.name}' has not implemented the 'get_metadata()' method."
