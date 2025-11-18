@@ -10,7 +10,7 @@ class FixedTokenChunker(BaseChunker):
         self.size = size
         self.overlap = overlap
 
-    def chunk(self, text: str, sentences: List[str], **kwargs) -> List[Tuple[str, List[int]]]:
+    def chunk(self, cleaned_text: str,annotated_lines: str, **kwargs) -> List[Tuple[str, List[int]]]:
         """
         Returns: List of (chunk_text, [sentence_ids]) tuples
 
@@ -22,13 +22,14 @@ class FixedTokenChunker(BaseChunker):
             raise ValueError("FixedTokenChunker requires 'tokenizer' in kwargs")
 
         # Build sentence position map (character positions)
+        sentences = self.parse_annotated_lines(annotated_lines)
         sentence_positions = []
         current_pos = 0
 
         for i, sentence in enumerate(sentences):
             if not sentence.strip():
                 continue
-            start = text.find(sentence, current_pos)
+            start = cleaned_text.find(sentence, current_pos)
             if start == -1:
                 continue
             end = start + len(sentence)
@@ -36,7 +37,7 @@ class FixedTokenChunker(BaseChunker):
             current_pos = end
 
         # Tokenize full text
-        tokens = tokenizer.encode(text)
+        tokens = tokenizer.encode(cleaned_text)
         chunks_with_ids = []
         start = 0
 
@@ -48,7 +49,7 @@ class FixedTokenChunker(BaseChunker):
             if chunk_text:
                 # Find character positions of this chunk in original text
                 # (approximate by finding the chunk text)
-                chunk_start = text.find(chunk_text)
+                chunk_start = cleaned_text.find(chunk_text)
                 if chunk_start != -1:
                     chunk_end = chunk_start + len(chunk_text)
 

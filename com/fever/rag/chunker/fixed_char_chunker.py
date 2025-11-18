@@ -9,7 +9,7 @@ class FixedCharChunker(BaseChunker):
         self.size = size
         self.overlap = overlap
 
-    def chunk(self, text: str, sentences: List[str], **kwargs) -> List[Tuple[str, List[int]]]:
+    def chunk(self, cleaned_text: str, annotated_lines: str, **kwargs) -> List[Tuple[str, List[int]]]:
         """
         Returns: List of (chunk_text, [sentence_ids]) tuples
 
@@ -17,6 +17,7 @@ class FixedCharChunker(BaseChunker):
         a position map during chunking.
         """
         # Build sentence position map
+        sentences = self.parse_annotated_lines(annotated_lines)
         sentence_positions = []
         current_pos = 0
 
@@ -24,7 +25,7 @@ class FixedCharChunker(BaseChunker):
             if not sentence.strip():
                 continue
             # Find sentence in full text
-            start = text.find(sentence, current_pos)
+            start = cleaned_text.find(sentence, current_pos)
             if start == -1:
                 continue
             end = start + len(sentence)
@@ -34,11 +35,11 @@ class FixedCharChunker(BaseChunker):
         # Create chunks and track sentence IDs
         chunks_with_ids = []
         start = 0
-        text_len = len(text)
+        text_len = len(cleaned_text)
 
         while start < text_len:
             end = start + self.size
-            chunk = text[start:end].strip()
+            chunk = cleaned_text[start:end].strip()
 
             if chunk:
                 # Find which sentences overlap with this chunk

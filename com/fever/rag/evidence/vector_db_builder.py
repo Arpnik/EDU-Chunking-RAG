@@ -77,22 +77,6 @@ class VectorDBBuilder:
 
         return f"{model_short}_{chunker.name}_chunks"
 
-    def _parse_article_lines(self, lines_str: str) -> List[str]:
-        """Parse article lines into clean sentences."""
-        if not lines_str:
-            return []
-
-        sentences = []
-        for line in lines_str.strip().split('\n'):
-            if not line.strip():
-                continue
-            parts = line.split('\t')
-            if len(parts) >= 2:
-                sentence = TextCleaner.clean(parts[1])
-                if sentence:
-                    sentences.append(sentence)
-        return sentences
-
     def _process_article(
             self,
             article: Dict,
@@ -101,16 +85,14 @@ class VectorDBBuilder:
     ) -> List[Tuple[str, Dict]]:
         """Process one article with a specific chunker."""
         article_id = article['id']
-        sentences = self._parse_article_lines(article.get('lines', ''))
         full_text = TextCleaner.clean(article.get('text', ''))
 
-        if not sentences or not full_text:
+        if not full_text:
             return []
 
         try:
-            chunks_with_ids = chunker.chunk(text=full_text, sentences=sentences,
-                tokenizer=embedding_model.tokenizer if hasattr(embedding_model, 'tokenizer') else None
-            )
+            chunks_with_ids = chunker.chunk(cleaned_text=full_text, annotated_lines=article.get('lines', ''),
+                                            tokenizer=embedding_model.tokenizer if hasattr(embedding_model, 'tokenizer') else None)
         except Exception as e:
             return []
 
@@ -321,8 +303,8 @@ class VectorDBBuilder:
         print(f"  Wiki directory: {self.wiki_dir}")
         print(f"  Qdrant: {self.db_config.host}:{self.db_config.port}")
         print(f"  Protocol: {'gRPC' if self.use_grpc else 'HTTP'}")
-        print(f"  Embedding models: {len(self.embedding_models)}")
-        print(f"  Chunking methods: {len(self.chunkers)}")
+        print(f"  Embedding models: {self.embedding_models}")
+        print(f"  Chunking methods: {self.chunkers}")
         print(f"  Total collections: {len(self.embedding_models) * len(self.chunkers)}")
         print(f"  Document batch size: {self.batch_size}")
         print(f"  Encoding batch size: {self.encode_batch_size}")

@@ -55,44 +55,7 @@ class EDUChunkerWithLinearHead(BaseChunker):
             padding=True
         )
 
-    # def _predict_edu_boundaries(self, text: str) -> List[int]:
-    #     """
-    #     Predict EDU boundary labels for each token in the text.
-    #
-    #     Args:
-    #         text: Input text to segment
-    #
-    #     Returns:
-    #         List of predictions (0 or 1) for each token
-    #     """
-    #     # Tokenize
-    #     inputs = self.tokenizer(
-    #         text,
-    #         return_tensors="pt",
-    #         truncation=True,
-    #         max_length=512,
-    #         padding=True
-    #     )
-    #
-    #     # Move to device
-    #     inputs = {k: v.to(self.device) for k, v in inputs.items()}
-    #
-    #     # Predict
-    #     with torch.no_grad():
-    #         outputs = self.model(**inputs)
-    #         logits = outputs.logits
-    #
-    #     # Get predictions (0 or 1 for each token)
-    #     predictions = torch.argmax(logits, dim=2)
-    #     predictions = predictions.squeeze().cpu().numpy()
-    #
-    #     # Handle single token case
-    #     if predictions.ndim == 0:
-    #         predictions = np.array([predictions.item()])
-    #
-    #     return predictions.tolist()
-
-    def _predict_edu_boundaries_with_sliding_window(
+    def predict_edu_boundaries_with_sliding_window(
             self,
             text: str,
             max_length: int = 512,
@@ -261,29 +224,29 @@ class EDUChunkerWithLinearHead(BaseChunker):
 
         return chunks
 
-    def chunk(self, text: str, sentences: List[str], **kwargs) -> List[Tuple[str, List[int]]]:
+    def chunk(self, cleaned_text: str, annotated_lines: str, **kwargs) -> List[Tuple[str, List[int]]]:
         """
         Chunk text into EDUs using the trained model.
 
         Args:
-            text: Full article text
-            sentences: Pre-parsed sentences from the article
+            cleaned_text: Full article text
             **kwargs: Additional arguments (unused)
 
         Returns:
             List of (chunk_text, sentence_ids) tuples
         """
-        if not text or not text.strip():
+        if not cleaned_text or not cleaned_text.strip():
             return []
 
         # Step 1: Predict EDU boundaries for each token
-        predictions = self._predict_edu_boundaries_with_sliding_window(text)
+        predictions = self.predict_edu_boundaries_with_sliding_window(cleaned_text)
 
         # Step 2: Align token predictions back to character positions
-        aligned_tokens = self._align_tokens_to_text(text, predictions)
+        aligned_tokens = self._align_tokens_to_text(cleaned_text, predictions)
 
         # Step 3: Create chunks based on boundaries and track sentence IDs
-        chunks_with_ids = self._create_edu_chunks(text, aligned_tokens, sentences)
+        sentences = self.parse_annotated_lines(annotated_lines)
+        chunks_with_ids = self._create_edu_chunks(cleaned_text, aligned_tokens, sentences)
 
         return chunks_with_ids
 
@@ -319,65 +282,3 @@ class EDUChunkerWithLinearHead(BaseChunker):
             'model_path': str(self.model_path),
             'cleaned': bool(chunk_text.strip())
         }
-
-    def __del__(self):
-        """Cleanup: move model to CPU to free GPU memory."""
-        if hasattr(self, 'model'):
-            self.model.to('cpu')
-            del self.model
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-
-
-# Example usage and testing
-if __name__ == "__main__":
-    # Example article
-    article_text = """
-    Oliver Reed was an English actor known for his burly screen presence. 
-    He was born in Wimbledon, London. Reed appeared in many notable films 
-    including Oliver!, Women in Love, and Gladiator. His performance in 
-    Gladiator was released posthumously.
-    """.strip()
-
-    sentences = [
-        "Oliver Reed was an English actor known for his burly screen presence.",
-        "He was born in Wimbledon, London.",
-        "Reed appeared in many notable films including Oliver!, Women in Love, and Gladiator.",
-        "His performance in Gladiator was released posthumously."
-    ]
-
-    # Initialize chunker (replace with your actual model path)
-    model_path = "./models/best_model"  # Path to your trained model
-
-    try:
-        chunker = EDUChunkerWithLinearHead(model_path=model_path)
-
-        print("=" * 70)
-        print("EDU CHUNKER TEST")
-        print("=" * 70)
-
-        # Chunk the text
-        chunks = chunker.chunk(article_text, sentences)
-
-        print(f"\nArticle length: {len(article_text)} chars")
-        print(f"Number of sentences: {len(sentences)}")
-        print(f"Number of EDU chunks: {len(chunks)}")
-
-        # Display chunks
-        for i, (chunk_text, sent_ids) in enumerate(chunks):
-            metadata = chunker.get_metadata("Oliver_Reed", i, chunk_text, sent_ids)
-            print(f"\n{'=' * 70}")
-            print(f"Chunk {i}:")
-            print(f"{'=' * 70}")
-            print(f"Text: {chunk_text}")
-            print(f"Sentence IDs: {sent_ids}")
-            print(f"Token count: {metadata['token_count']}")
-            print(f"FEVER IDs: {[f'Oliver_Reed::{sid}' for sid in sent_ids]}")
-
-    except Exception as e:
-        print(f"Error: {e}")
-        print("\nNote: Make sure to provide the correct path to your trained model.")
-        print("The model directory should contain:")
-        print("  - config.json")
-        print("  - pytorch_model.bin (or model.safetensors)")
-        print("  - tokenizer files (tokenizer_config.json, vocab.txt, etc.)")

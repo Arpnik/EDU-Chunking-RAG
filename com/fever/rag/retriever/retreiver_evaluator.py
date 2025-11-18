@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from tqdm import tqdm
 
 from com.fever.rag.chunker.base_chunker import BaseChunker
+from com.fever.rag.chunker.edu_chunker_with_linear_head import EDUChunkerWithLinearHead
 from com.fever.rag.chunker.fixed_char_chunker import FixedCharChunker
 from com.fever.rag.chunker.sentence_chunker import SentenceChunker
 from com.fever.rag.evidence.vector_db_builder import VectorDBBuilder
@@ -26,7 +27,8 @@ class RetrieverEvaluator:
             output_file: str = "retrieval_evaluation_results.jsonl",
             k_values: List[int] = None,
             batch_size: int = 100,
-            max_files: Optional[int] = None
+            max_files: Optional[int] = None,
+            overlap: Optional[int] = None
     ):
         """
         Initialize the retriever evaluator.
@@ -51,6 +53,7 @@ class RetrieverEvaluator:
         self.k_values = k_values or [1, 3, 5, 10, 20]
         self.batch_size = batch_size
         self.max_files = max_files
+        self.overlap = overlap
 
         # Initialize components
         self.builder = VectorDBBuilder(
@@ -112,7 +115,7 @@ class RetrieverEvaluator:
 
         return evidence_articles
 
-    def _calculate_metrics(
+    def calculate_metrics(
             self,
             retrieved_articles: List[str],
             relevant_articles: Set[str],
@@ -237,7 +240,7 @@ class RetrieverEvaluator:
                     retrieved_articles.append(article_id)
 
             # Calculate metrics for this claim
-            claim_metrics = self._calculate_metrics(
+            claim_metrics = self.calculate_metrics(
                 retrieved_articles,
                 relevant_articles,
                 self.k_values
@@ -305,7 +308,8 @@ class RetrieverEvaluator:
             'mean_reciprocal_rank': metrics.mean_reciprocal_rank,
             'precision_at_k': metrics.precision_at_k,
             'recall_at_k': metrics.recall_at_k,
-            'accuracy_at_k': metrics.accuracy_at_k
+            'accuracy_at_k': metrics.accuracy_at_k,
+            'overlap': self.overlap if self.overlap else 0
         }
 
         # Append to file
@@ -344,7 +348,6 @@ class RetrieverEvaluator:
         return metrics
 
 
-# Example usage
 if __name__ == "__main__":
     # Configure
     db_config = VectorDBConfig(
@@ -353,24 +356,38 @@ if __name__ == "__main__":
         use_grpc=True
     )
 
-    for overlap in [10,20, 30, 50]:
-        chunker = FixedCharChunker(overlap=overlap, size=200)
+    chunker = EDUChunkerWithLinearHead(model_path = "../../../../edu_segmenter_linear/best_model")
+    evaluator = RetrieverEvaluator(
+        claim_file_path="../../../../dataset/reduced_fever_data/paper_dev.jsonl",
+        embedding_model_name="sentence-transformers/all-MiniLM-L6-v2",
+        chunker=chunker,
+        db_config=db_config,
+        wiki_dir="../../../../dataset/reduced_fever_data/wiki",
+        output_file="../../../retrieval_evaluation_results.jsonl",
+        k_values=[1, 3, 5, 10, 20],
+        max_files=None)
 
-        evaluator = RetrieverEvaluator(
-            claim_file_path="../../../../dataset/reduced_fever_data/paper_dev.jsonl",
-            embedding_model_name="sentence-transformers/all-MiniLM-L6-v2",
-            chunker=chunker,
-            db_config=db_config,
-            wiki_dir="../../../../dataset/reduced_fever_data/wiki",
-            output_file="retrieval_evaluation_results.jsonl",
-            k_values=[1, 3, 5, 10, 20],
-            max_files=None  # Process all files
-        )
+    # Run evaluation
+    retrieval_config = RetrievalConfig(
+        strategy=RetrievalStrategy.TOP_K,
+        k=20
+    )
+    evaluator.run(build_db=True, retrieval_config=retrieval_config)
 
-        # Run evaluation
-        retrieval_config = RetrievalConfig(
-            strategy=RetrievalStrategy.TOP_K,
-            k=20
-        )
-
-        evaluator.run(build_db=True, retrieval_config=retrieval_config)
+    # chunker = SentenceChunker()
+    # evaluator = RetrieverEvaluator(
+    #     claim_file_path="../../../../dataset/reduced_fever_data/paper_dev.jsonl",
+    #     embedding_model_name="sentence-transformers/all-MiniLM-L6-v2",
+    #     chunker=chunker,
+    #     db_config=db_config,
+    #     wiki_dir="../../../../dataset/reduced_fever_data/wiki",
+    #     output_file="../../../retrieval_evaluation_results.jsonl",
+    #     k_values=[1, 3, 5, 10, 20],
+    #     max_files=None)
+    #
+    # # Run evaluation
+    # retrieval_config = RetrievalConfig(
+    #     strategy=RetrievalStrategy.TOP_K,
+    #     k=20
+    # )
+    # evaluator.run(build_db=True, retrieval_config=retrieval_config)
