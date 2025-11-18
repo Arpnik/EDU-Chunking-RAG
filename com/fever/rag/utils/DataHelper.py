@@ -5,6 +5,7 @@ from typing import Optional, List, Set, Dict
 import numpy as np
 from qdrant_client.grpc import ScoredPoint
 from sympy.printing.pytorch import torch
+from qdrant_client import QdrantClient
 
 
 class RetrievalStrategy(Enum):
@@ -24,6 +25,21 @@ class VectorDBConfig:
     def actual_port(self) -> int:
         """Get actual port based on gRPC setting."""
         return 6334 if self.use_grpc else self.port
+
+    def connect_to_qdrant(self) -> QdrantClient:
+        """Connect to Qdrant."""
+        if self.use_grpc:
+            return QdrantClient(
+                host=self.host,
+                port=self.actual_port,
+                prefer_grpc=True
+            )
+        else:
+            return QdrantClient(
+                host=self.host,
+                port=self.port
+            )
+
 
 
 @dataclass
@@ -98,44 +114,6 @@ class ClassificationMetrics:
                 f"F1: {self.f1:.3f}\n"
                 f"Support: {self.support}")
 
-
-@dataclass
-class RetrievalMetrics:
-    """Metrics for evaluating retrieval performance."""
-    claim_id: Optional[int]
-    collection_name: str
-    embedding_model_name: str
-    retrieval_config: RetrievalConfig
-
-    # Ground truth
-    ground_truth_articles: Set[str]
-
-    # Retrieved
-    retrieved_articles: Set[str]
-    num_chunks_retrieved: int
-
-    # Metrics
-    precision: float = 0.0
-    recall: float = 0.0
-    f1: float = 0.0
-    hit_rate: float = 0.0  # 1.0 if at least one correct article retrieved
-
-    # Additional info
-    avg_similarity: float = 0.0
-    max_similarity: float = 0.0
-    retrieval_time: float = 0.0
-
-
-@dataclass
-class RetrievalMetrics:
-    """Container for retrieval metrics."""
-    precision_at_k: float
-    recall_at_k: float
-    success_rate: float  # At least 1 relevant chunk retrieved
-    mean_average_precision: float
-    num_claims_evaluated: int
-    k: int
-
 def _get_device() -> str:
     """Automatically detect best available device."""
     if torch.cuda.is_available():
@@ -148,3 +126,16 @@ def _get_device() -> str:
         device = "cpu"
         print("Using CPU")
     return device
+
+
+@dataclass
+class EvaluationMetrics:
+    """Stores evaluation metrics for retrieval."""
+    precision_at_k: Dict[int, float]  # k -> precision
+    recall_at_k: Dict[int, float]  # k -> recall
+    accuracy_at_k: Dict[int, float]  # k -> accuracy (at least one correct in top-k)
+    mean_reciprocal_rank: float
+    total_claims: int
+    total_relevant_docs: int
+    avg_retrieval_time: float
+

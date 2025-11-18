@@ -2,7 +2,7 @@ from typing import Optional, List, Tuple, Dict
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams, PointStruct, OptimizersConfigDiff
 from com.fever.rag.chunker.base_chunker import BaseChunker
-from com.fever.rag.utils.DataHelper import _get_device
+from com.fever.rag.utils.DataHelper import _get_device, VectorDBConfig
 from com.fever.rag.utils.text_cleaner import TextCleaner
 from sentence_transformers import SentenceTransformer
 from pathlib import Path
@@ -17,12 +17,11 @@ class VectorDBBuilder:
     def __init__(
             self,
             wiki_dir: str = "wiki",
-            qdrant_host: str = "localhost",
-            qdrant_port: int = 6333,
             batch_size: int = 100,
             max_files: Optional[int] = None,
             encode_batch_size: int = 128,
-            use_grpc: bool = True
+            use_grpc: bool = True,
+            db_config: VectorDBConfig = None
     ):
         """
         Initialize the Vector DB Builder with Qdrant.
@@ -37,8 +36,7 @@ class VectorDBBuilder:
             use_grpc: Use gRPC for faster communication (recommended)
         """
         self.wiki_dir = wiki_dir
-        self.qdrant_host = qdrant_host
-        self.qdrant_port = qdrant_port if not use_grpc else 6334
+        self.db_config = db_config
         self.batch_size = batch_size
         self.max_files = max_files
         self.encode_batch_size = encode_batch_size
@@ -78,25 +76,6 @@ class VectorDBBuilder:
             model_short = 'multiqa'
 
         return f"{model_short}_{chunker.name}_chunks"
-
-    def _connect_to_qdrant(self) -> QdrantClient:
-        """Connect to Qdrant."""
-        if self.use_grpc:
-            client = QdrantClient(
-                host=self.qdrant_host,
-                port=self.qdrant_port,
-                prefer_grpc=True
-            )
-        else:
-            client = QdrantClient(
-                host=self.qdrant_host,
-                port=self.qdrant_port
-            )
-
-        # Test connection
-        collections = client.get_collections()
-        print(f"    Connected to Qdrant ({len(collections.collections)} existing collections)")
-        return client
 
     def _parse_article_lines(self, lines_str: str) -> List[str]:
         """Parse article lines into clean sentences."""
@@ -340,7 +319,7 @@ class VectorDBBuilder:
         print("=" * 70)
         print(f"\nConfiguration:")
         print(f"  Wiki directory: {self.wiki_dir}")
-        print(f"  Qdrant: {self.qdrant_host}:{self.qdrant_port}")
+        print(f"  Qdrant: {self.db_config.host}:{self.db_config.port}")
         print(f"  Protocol: {'gRPC' if self.use_grpc else 'HTTP'}")
         print(f"  Embedding models: {len(self.embedding_models)}")
         print(f"  Chunking methods: {len(self.chunkers)}")
@@ -371,7 +350,7 @@ class VectorDBBuilder:
             vector_size = embedding_model.get_sentence_embedding_dimension()
 
             print(f"  Connecting to Qdrant...")
-            client = self._connect_to_qdrant()
+            client = self.db_config.connect_to_qdrant()
 
             for chunker in self.chunkers:
                 collection_name = self._get_collection_name(embedding_model_name, chunker)
@@ -421,7 +400,7 @@ class VectorDBBuilder:
         print("BUILD COMPLETE!")
         print("=" * 70)
 
-        client = self._connect_to_qdrant()
+        client = self.db_config.connect_to_qdrant()
         all_collections = client.get_collections().collections
 
         print(f"\nAll Collections ({len(all_collections)}):")

@@ -31,7 +31,7 @@ class RetrievedEvidence:
 
 
 class QdrantRetriever:
-    """Retriever for querying Qdrant vector database with claims."""
+    """retriever for querying Qdrant vector database with claims."""
 
     def __init__(
             self,
@@ -70,7 +70,7 @@ class QdrantRetriever:
         else:
             self.device = device
 
-        print(f"Initializing Qdrant Retriever...")
+        print(f"Initializing Qdrant retriever...")
         print(f"  Collection: {collection_name}")
         print(f"  Model: {embedding_model_name}")
         print(f"  Device: {self.device}")
@@ -84,7 +84,7 @@ class QdrantRetriever:
         # Verify collection exists
         self._verify_collection()
 
-        print(f"✓ Retriever ready!")
+        print(f"✓ retriever ready!")
 
     def _connect_to_qdrant(self) -> QdrantClient:
         """Connect to Qdrant."""
@@ -411,35 +411,6 @@ if __name__ == "__main__":
         for i, evidence in enumerate(results[:2], 1):  # Show top 2
             print(f"  {i}. [{evidence.article_id}] Score: {evidence.score:.4f}")
 
-    # Example 3: Article-specific search
-    print("\n" + "=" * 80)
-    print("EXAMPLE 3: Article-Specific Search")
-    print("=" * 80)
-
-    claim = "This is a historical event"
-    article_id = "World_War_II"  # Example article ID
-
-    results = retriever.retrieve_by_article(
-        claim=claim,
-        article_id=article_id,
-        top_k=3
-    )
-
-    print(f"Retrieved {len(results)} chunks from article '{article_id}'")
-
-    # Example 4: Get all chunks from an article
-    print("\n" + "=" * 80)
-    print("EXAMPLE 4: Get All Article Chunks")
-    print("=" * 80)
-
-    chunks = retriever.get_article_chunks(
-        article_id="Python_(programming_language)",
-        limit=10
-    )
-
-    print(f"Retrieved {len(chunks)} chunks from article")
-    for i, chunk in enumerate(chunks[:3], 1):
-        print(f"{i}. Chunk {chunk.chunk_id}: {chunk.text[:100]}...")
 
     # Example 5: Save results to file
     print("\n" + "=" * 80)

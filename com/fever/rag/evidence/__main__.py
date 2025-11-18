@@ -3,6 +3,7 @@ from com.fever.rag.chunker.fixed_char_chunker import FixedCharChunker
 from com.fever.rag.chunker.fixed_token_chunker import FixedTokenChunker
 from com.fever.rag.chunker.sentence_chunker import SentenceChunker
 from com.fever.rag.evidence.vector_db_builder import VectorDBBuilder
+from com.fever.rag.utils.DataHelper import VectorDBConfig
 
 
 def parse_args():
@@ -49,6 +50,8 @@ def main():
     print(f"Using {'gRPC' if args.use_grpc else 'HTTP'} protocol")
 
     # Initialize builder with Qdrant configuration
+    db_config = VectorDBConfig(host=args.qdrant_host, port = args.qdrant_port, use_grpc=True)
+
     builder = VectorDBBuilder(
         wiki_dir=args.wiki_dir,
         qdrant_host=args.qdrant_host,
@@ -56,7 +59,8 @@ def main():
         batch_size=args.batch_size,
         encode_batch_size=args.encode_batch_size,
         max_files=args.max_files,
-        use_grpc=args.use_grpc
+        use_grpc=args.use_grpc,
+        db_config=db_config
     )
 
     # Add embedding models
