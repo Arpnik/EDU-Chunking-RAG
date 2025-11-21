@@ -114,7 +114,7 @@ class ClassificationMetrics:
                 f"F1: {self.f1:.3f}\n"
                 f"Support: {self.support}")
 
-def _get_device() -> str:
+def get_device() -> str:
     """Automatically detect best available device."""
     if torch.cuda.is_available():
         device = "cuda"

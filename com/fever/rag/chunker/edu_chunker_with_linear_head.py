@@ -1,20 +1,18 @@
 """
 EDU-based chunker using a fine-tuned BERT model with linear head for token classification.
 
-This chunker uses a trained model to predict EDU (Elementary Discourse Unit) boundaries
-at the token level and creates chunks based on these predicted boundaries.
+This chunker processes individual lines (sentences) from FEVER dataset and creates chunks
+based on predicted EDU boundaries with configurable overlap between chunks.
 """
 
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple
 from pathlib import Path
 import torch
-from transformers import (
-    AutoTokenizer,
-    AutoModelForTokenClassification,
-    DataCollatorForTokenClassification
-)
+import transformers
+from transformers import AutoTokenizer, DataCollatorForTokenClassification
+from peft import AutoPeftModelForTokenClassification
 from com.fever.rag.chunker.base_chunker import BaseChunker
-from com.fever.rag.utils.DataHelper import _get_device
+from com.fever.rag.utils.DataHelper import get_device
 
 
 class EDUChunkerWithLinearHead(BaseChunker):
@@ -25,29 +23,38 @@ class EDUChunkerWithLinearHead(BaseChunker):
     - 0 = EDU Continue (token is within current EDU)
     - 1 = EDU Start (token begins a new EDU)
 
-    When label 1 is predicted, a new chunk starts.
+    Processes sentences line-by-line and combines EDUs into chunks with overlap control.
     """
 
-    def __init__(self, model_path: str):
+    def __init__(self, model_path: str, overlap: int = 0):
         """
         Initialize the EDU chunker.
 
         Args:
-            model_path: Path to the trained model directory (contains model + tokenizer)
-            device: Device to run model on ('cuda', 'mps', 'cpu', or None for auto)
+            model_path: Path to the trained PEFT model directory (contains adapter + tokenizer)
+            overlap: Number of overlapping sentences between consecutive chunks (default: 0)
+                    - 0: No overlap, chunks are completely separate
+                    - 1: Adjacent chunks share 1 sentence
+                    - 2+: Adjacent chunks share multiple sentences
         """
         super().__init__('edu_linear_head', model_path=model_path)
 
         self.model_path = Path(model_path)
-        self.device = _get_device()
+        self.device = get_device()
+        self.overlap = max(0, overlap)  # Ensure non-negative
 
-        # Load tokenizer and model
-        print(f"Loading EDU model from: {self.model_path}")
+        # Load PEFT model and tokenizer
+        print(f"Loading EDU PEFT model from: {self.model_path}")
+
+        transformers.logging.set_verbosity_error()
         self.tokenizer = AutoTokenizer.from_pretrained(str(self.model_path))
-        self.model = AutoModelForTokenClassification.from_pretrained(str(self.model_path))
+        self.model = AutoPeftModelForTokenClassification.from_pretrained(str(self.model_path))
+        transformers.logging.set_verbosity_warning()
+
         self.model.to(self.device)
         self.model.eval()
-        print(f"✓ EDU model loaded on {self.device}")
+        print(f"✓ EDU PEFT model loaded on {self.device}")
+        print(f"✓ Chunk overlap: {self.overlap} sentence(s)")
 
         # Data collator for batch processing
         self.data_collator = DataCollatorForTokenClassification(
@@ -55,207 +62,285 @@ class EDUChunkerWithLinearHead(BaseChunker):
             padding=True
         )
 
-    def predict_edu_boundaries_with_sliding_window(
-            self,
-            text: str,
-            max_length: int = 512,
-            stride: int = 256  # 50% overlap
-    ) -> List[int]:
+    def predict_edu_boundaries_for_line(self, line_text: str) -> List[int]:
         """
-        Process long texts in overlapping windows.
+        Predict EDU boundaries for a single line (sentence).
+
+        Args:
+            line_text: Text of a single sentence
+
+        Returns:
+            List of predictions (0 or 1) for each token in the sentence
         """
-        # Tokenize full text first
-        full_encoding = self.tokenizer(
-            text,
+        if not line_text or not line_text.strip():
+            return []
+
+        # Tokenize the line
+        encoding = self.tokenizer(
+            line_text,
+            return_tensors="pt",
+            truncation=True,
+            max_length=512,
+            padding=True
+        )
+
+        # Move to device
+        input_ids = encoding['input_ids'].to(self.device)
+        attention_mask = encoding['attention_mask'].to(self.device)
+
+        # Predict
+        with torch.no_grad():
+            outputs = self.model(input_ids=input_ids, attention_mask=attention_mask)
+            logits = outputs.logits
+            predictions = torch.argmax(logits, dim=2).squeeze()
+
+        # Extract predictions (skip [CLS] and [SEP] tokens)
+        if predictions.dim() == 0:  # Single token case
+            return [predictions.item()]
+
+        pred_list = predictions.cpu().numpy().tolist()
+
+        # Remove special tokens ([CLS] at start, [SEP] at end)
+        if len(pred_list) > 2:
+            return pred_list[1:-1]
+
+        return []
+
+    def split_line_into_edus(
+        self,
+        line_text: str,
+        predictions: List[int]
+    ) -> List[str]:
+        """
+        Split a line into EDUs based on predictions.
+
+        Args:
+            line_text: Original sentence text
+            predictions: List of boundary predictions (0=continue, 1=start)
+
+        Returns:
+            List of EDU strings from this sentence
+        """
+        if not predictions or not line_text.strip():
+            return [line_text] if line_text.strip() else []
+
+        # Tokenize to get word-level alignment
+        encoding = self.tokenizer(
+            line_text,
             return_offsets_mapping=True,
             add_special_tokens=False
         )
 
-        tokens = full_encoding['input_ids']
-        offsets = full_encoding['offset_mapping']
+        offsets = encoding['offset_mapping']
 
-        all_predictions = []
+        # Align predictions with character offsets
+        if len(offsets) != len(predictions):
+            # Fallback: return whole line as single EDU
+            return [line_text]
 
-        # Process in windows
-        for start_idx in range(0, len(tokens), stride):
-            end_idx = min(start_idx + max_length - 2, len(tokens))  # -2 for [CLS]/[SEP]
+        # Find EDU boundaries (where prediction == 1)
+        edu_starts = [0]  # First EDU always starts at position 0
+        for i, pred in enumerate(predictions):
+            if pred == 1 and i > 0:  # New EDU starts here
+                edu_starts.append(offsets[i][0])  # Character position
 
-            window_tokens = tokens[start_idx:end_idx]
+        # Add end position
+        edu_starts.append(len(line_text))
 
-            # Add special tokens
-            window_input = torch.tensor([[
-                self.tokenizer.cls_token_id,
-                *window_tokens,
-                self.tokenizer.sep_token_id
-            ]]).to(self.device)
+        # Extract EDUs
+        edus = []
+        for i in range(len(edu_starts) - 1):
+            start_char = edu_starts[i]
+            end_char = edu_starts[i + 1]
+            edu_text = line_text[start_char:end_char].strip()
+            if edu_text:
+                edus.append(edu_text)
 
-            # Predict for this window
-            with torch.no_grad():
-                outputs = self.model(window_input)
-                logits = outputs.logits
-                predictions = torch.argmax(logits, dim=2).squeeze()
+        return edus if edus else [line_text]
 
-            # Extract predictions (skip [CLS] and [SEP])
-            window_preds = predictions[1:-1].cpu().numpy().tolist()
-
-            # For overlapping regions, keep first occurrence
-            if start_idx == 0:
-                all_predictions.extend(window_preds)
-            else:
-                # Skip overlapped tokens
-                all_predictions.extend(window_preds[stride:])
-
-            if end_idx >= len(tokens):
-                break
-
-        return all_predictions[:len(tokens)]  # Ensure same length as input
-
-    def _align_tokens_to_text(
-            self,
-            text: str,
-            predictions: List[int]
-    ) -> List[Tuple[str, int, int, int]]:
+    def process_lines_to_edus(
+        self,
+        lines: List[Tuple[int, str]]
+    ) -> List[Tuple[str, int]]:
         """
-        Align token predictions back to character positions in original text.
+        Process all lines and extract EDUs with their sentence IDs.
 
         Args:
-            text: Original text
-            predictions: EDU boundary predictions for each token
+            lines: List of (sentence_id, sentence_text) tuples
 
         Returns:
-            List of (token_text, start_char, end_char, prediction) tuples
+            List of (edu_text, sentence_id) tuples
         """
-        # Tokenize with offset mapping to get character positions
-        encoding = self.tokenizer(
-            text,
-            return_offsets_mapping=True,
-            truncation=True,
-            max_length=512,
-            add_special_tokens=True
-        )
+        all_edus = []
 
-        offset_mapping = encoding['offset_mapping']
-        tokens = encoding.tokens()
-
-        # Align predictions with offsets (skip special tokens)
-        aligned_tokens = []
-        pred_idx = 0
-
-        for i, (token, (start, end)) in enumerate(zip(tokens, offset_mapping)):
-            # Skip special tokens ([CLS], [SEP], [PAD])
-            if start == end == 0:
+        for sent_id, line_text in lines:
+            if not line_text or not line_text.strip():
                 continue
 
-            if pred_idx < len(predictions):
-                prediction = predictions[pred_idx]
-                token_text = text[start:end]
-                aligned_tokens.append((token_text, start, end, prediction))
-                pred_idx += 1
+            # Predict EDU boundaries for this line
+            predictions = self.predict_edu_boundaries_for_line(line_text)
 
-        return aligned_tokens
+            if not predictions:
+                # No predictions, treat whole line as single EDU
+                all_edus.append((line_text.strip(), sent_id))
+                continue
 
-    def _create_edu_chunks(
-            self,
-            text: str,
-            aligned_tokens: List[Tuple[str, int, int, int]],
-            sentences: List[str]
+            # Split line into EDUs
+            edus = self.split_line_into_edus(line_text, predictions)
+
+            # Add all EDUs from this sentence
+            for edu in edus:
+                all_edus.append((edu, sent_id))
+
+        return all_edus
+
+    def create_chunks_with_overlap(
+        self,
+        edus_with_ids: List[Tuple[str, int]]
     ) -> List[Tuple[str, List[int]]]:
         """
-        Create EDU chunks based on predicted boundaries and track sentence IDs.
+        Combine EDUs into chunks with configurable sentence-level overlap.
 
         Args:
-            text: Original text
-            aligned_tokens: List of (token_text, start_char, end_char, prediction)
-            sentences: Pre-parsed sentences from article
+            edus_with_ids: List of (edu_text, sentence_id) tuples
 
         Returns:
             List of (chunk_text, sentence_ids) tuples
         """
-        if not aligned_tokens:
+        if not edus_with_ids:
             return []
 
-        # Build sentence position map
-        sentence_positions = []
-        current_pos = 0
-        for i, sentence in enumerate(sentences):
-            if not sentence.strip():
-                continue
-            start = text.find(sentence, current_pos)
-            if start == -1:
-                continue
-            end = start + len(sentence)
-            sentence_positions.append((i, start, end))
-            current_pos = end
+        # Group EDUs by sentence ID
+        sentence_edus = {}  # {sentence_id: [edu_texts]}
+        for edu_text, sent_id in edus_with_ids:
+            if sent_id not in sentence_edus:
+                sentence_edus[sent_id] = []
+            sentence_edus[sent_id].append(edu_text)
 
-        # Create chunks based on EDU boundaries (prediction = 1)
+        # Get ordered sentence IDs
+        sentence_ids = sorted(sentence_edus.keys())
+
+        if self.overlap == 0:
+            # No overlap: each sentence becomes its own chunk
+            chunks = []
+            for sent_id in sentence_ids:
+                chunk_text = " ".join(sentence_edus[sent_id])
+                chunks.append((chunk_text, [sent_id]))
+            return chunks
+
+        # With overlap: sliding window over sentences
         chunks = []
-        current_chunk_start = aligned_tokens[0][1]  # Start of first token
-        current_chunk_end = aligned_tokens[0][2]  # End of first token
+        i = 0
 
-        for i, (token_text, start, end, prediction) in enumerate(aligned_tokens):
-            if prediction == 1 and i > 0:  # New EDU starts (but not at first token)
-                # Finalize previous chunk
-                chunk_text = text[current_chunk_start:current_chunk_end].strip()
+        while i < len(sentence_ids):
+            # Determine window size (current sentence + overlap)
+            window_size = 1 + self.overlap
+            window_sent_ids = sentence_ids[i:i + window_size]
 
-                if chunk_text:
-                    # Find which sentences overlap with this chunk
-                    chunk_sentence_ids = []
-                    for sent_id, sent_start, sent_end in sentence_positions:
-                        if sent_start < current_chunk_end and sent_end > current_chunk_start:
-                            chunk_sentence_ids.append(sent_id)
+            # Collect all EDUs in this window
+            chunk_edus = []
+            for sent_id in window_sent_ids:
+                chunk_edus.extend(sentence_edus[sent_id])
 
-                    chunks.append((chunk_text, chunk_sentence_ids))
+            # Create chunk
+            chunk_text = " ".join(chunk_edus)
+            chunks.append((chunk_text, window_sent_ids))
 
-                # Start new chunk
-                current_chunk_start = start
-                current_chunk_end = end
-            else:
-                # Continue current chunk
-                current_chunk_end = end
-
-        # Add final chunk
-        chunk_text = text[current_chunk_start:current_chunk_end].strip()
-        if chunk_text:
-            chunk_sentence_ids = []
-            for sent_id, sent_start, sent_end in sentence_positions:
-                if sent_start < current_chunk_end and sent_end > current_chunk_start:
-                    chunk_sentence_ids.append(sent_id)
-            chunks.append((chunk_text, chunk_sentence_ids))
+            # Move to next window (stride = 1 to create overlap)
+            i += 1
 
         return chunks
 
-    def chunk(self, cleaned_text: str, annotated_lines: str, **kwargs) -> List[Tuple[str, List[int]]]:
+    def merge_duplicate_chunks(
+        self,
+        chunks: List[Tuple[str, List[int]]]
+    ) -> List[Tuple[str, List[int]]]:
         """
-        Chunk text into EDUs using the trained model.
+        Merge chunks that share more than 'overlap' sentences.
+
+        This handles edge cases where chunks accidentally share too many sentences
+        due to EDU boundary predictions.
 
         Args:
-            cleaned_text: Full article text
+            chunks: List of (chunk_text, sentence_ids) tuples
+
+        Returns:
+            Deduplicated list of chunks
+        """
+        if not chunks or self.overlap == 0:
+            return chunks
+
+        merged_chunks = []
+        i = 0
+
+        while i < len(chunks):
+            current_text, current_ids = chunks[i]
+
+            # Check if next chunk overlaps too much
+            if i + 1 < len(chunks):
+                next_text, next_ids = chunks[i + 1]
+
+                # Count overlapping sentences
+                overlap_count = len(set(current_ids) & set(next_ids))
+
+                # If overlap exceeds configured limit, merge
+                if overlap_count > self.overlap:
+                    # Merge the two chunks
+                    merged_ids = sorted(set(current_ids) | set(next_ids))
+                    merged_text = current_text + " " + next_text
+
+                    merged_chunks.append((merged_text, merged_ids))
+                    i += 2  # Skip next chunk since we merged it
+                    continue
+
+            # No merge needed
+            merged_chunks.append((current_text, current_ids))
+            i += 1
+
+        return merged_chunks
+
+    def chunk(
+        self,
+        cleaned_text: str,
+        annotated_lines: str,
+        **kwargs
+    ) -> List[Tuple[str, List[int]]]:
+        """
+        Chunk text into EDUs using the trained model, processing line by line.
+
+        Args:
+            cleaned_text: Full article text (unused, kept for interface compatibility)
+            annotated_lines: Tab-separated lines from FEVER dataset:
+                           Format: "sentence_id\tsentence_text"
             **kwargs: Additional arguments (unused)
 
         Returns:
             List of (chunk_text, sentence_ids) tuples
         """
-        if not cleaned_text or not cleaned_text.strip():
+        # Parse annotated lines into (id, text) tuples
+        lines = self.parse_annotated_lines(annotated_lines)
+
+        if not lines:
             return []
 
-        # Step 1: Predict EDU boundaries for each token
-        predictions = self.predict_edu_boundaries_with_sliding_window(cleaned_text)
+        lines_with_number = [(i, line) for i, line in enumerate(lines)]
+        # Step 1: Process each line and extract EDUs
+        edus_with_ids = self.process_lines_to_edus(lines_with_number)
 
-        # Step 2: Align token predictions back to character positions
-        aligned_tokens = self._align_tokens_to_text(cleaned_text, predictions)
+        # Step 2: Create chunks with overlap
+        chunks = self.create_chunks_with_overlap(edus_with_ids)
 
-        # Step 3: Create chunks based on boundaries and track sentence IDs
-        sentences = self.parse_annotated_lines(annotated_lines)
-        chunks_with_ids = self._create_edu_chunks(cleaned_text, aligned_tokens, sentences)
+        # Step 3: Merge chunks with excessive overlap
+        merged_chunks = self.merge_duplicate_chunks(chunks)
 
-        return chunks_with_ids
+        return merged_chunks
 
     def get_metadata(
-            self,
-            article_id: str,
-            chunk_index: int,
-            chunk_text: str,
-            sentence_ids: List[int] = None
+        self,
+        article_id: str,
+        chunk_index: int,
+        chunk_text: str,
+        sentence_ids: List[int] = None
     ) -> Dict:
         """
         Generate metadata for an EDU chunk.
@@ -279,6 +364,7 @@ class EDUChunkerWithLinearHead(BaseChunker):
             'chunk_size': len(chunk_text),
             'token_count': len(chunk_text.split()),
             'num_sentences': len(sentence_ids),
+            'overlap': self.overlap,
             'model_path': str(self.model_path),
             'cleaned': bool(chunk_text.strip())
         }

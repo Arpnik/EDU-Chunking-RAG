@@ -356,23 +356,27 @@ if __name__ == "__main__":
         use_grpc=True
     )
 
-    chunker = EDUChunkerWithLinearHead(model_path = "../../../../edu_segmenter_linear/best_model")
-    evaluator = RetrieverEvaluator(
-        claim_file_path="../../../../dataset/reduced_fever_data/paper_dev.jsonl",
-        embedding_model_name="sentence-transformers/all-MiniLM-L6-v2",
-        chunker=chunker,
-        db_config=db_config,
-        wiki_dir="../../../../dataset/reduced_fever_data/wiki",
-        output_file="../../../retrieval_evaluation_results.jsonl",
-        k_values=[1, 3, 5, 10, 20],
-        max_files=None)
+    OVERLAP = [0]
+    for overlap in OVERLAP:
+        chunker = EDUChunkerWithLinearHead(model_path = "../../../../edu_segmenter_linear/best_model", overlap=overlap)
+        evaluator = RetrieverEvaluator(
+            claim_file_path="../../../../dataset/reduced_fever_data/paper_dev.jsonl",
+            embedding_model_name="sentence-transformers/all-MiniLM-L6-v2",
+            chunker=chunker,
+            db_config=db_config,
+            wiki_dir="../../../../dataset/reduced_fever_data/wiki",
+            output_file="../../../retrieval_evaluation_results.jsonl",
+            k_values=[1, 3, 5, 10, 20],
+            max_files=None,
+            overlap=overlap
+        )
 
-    # Run evaluation
-    retrieval_config = RetrievalConfig(
-        strategy=RetrievalStrategy.TOP_K,
-        k=20
-    )
-    evaluator.run(build_db=True, retrieval_config=retrieval_config)
+        # Run evaluation
+        retrieval_config = RetrievalConfig(
+            strategy=RetrievalStrategy.TOP_K,
+            k=20
+        )
+        evaluator.run(build_db=True, retrieval_config=retrieval_config)
 
     # chunker = SentenceChunker()
     # evaluator = RetrieverEvaluator(

@@ -2,7 +2,7 @@ from typing import Optional, List, Tuple, Dict
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams, PointStruct, OptimizersConfigDiff
 from com.fever.rag.chunker.base_chunker import BaseChunker
-from com.fever.rag.utils.DataHelper import _get_device, VectorDBConfig
+from com.fever.rag.utils.DataHelper import get_device, VectorDBConfig
 from com.fever.rag.utils.text_cleaner import TextCleaner
 from sentence_transformers import SentenceTransformer
 from pathlib import Path
@@ -43,7 +43,7 @@ class VectorDBBuilder:
         self.use_grpc = use_grpc
         self.embedding_models: List[str] = []
         self.chunkers: List[BaseChunker] = []
-        self.device = _get_device()
+        self.device = get_device()
 
         # Performance tracking
         self.timing_stats = {

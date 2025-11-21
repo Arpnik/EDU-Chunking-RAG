@@ -2,7 +2,7 @@ from typing import Optional, List, Dict, Set
 from sentence_transformers import SentenceTransformer
 import time
 from com.fever.rag.utils.DataHelper import VectorDBConfig, RetrievalConfig, RetrievalResult, RetrievalStrategy, \
-     _get_device
+     get_device
 
 
 class VectorDBRetriever:
@@ -17,7 +17,7 @@ class VectorDBRetriever:
             device: Device for embeddings ('cuda', 'mps', 'cpu', or None for auto)
         """
         self.db_config = db_config
-        self.device = _get_device()
+        self.device = get_device()
         self._model_cache: Dict[str, SentenceTransformer] = {}
 
     def _get_embedding_model(self, model_name: str) -> SentenceTransformer:
