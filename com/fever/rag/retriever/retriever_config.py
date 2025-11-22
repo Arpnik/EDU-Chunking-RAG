@@ -53,7 +53,7 @@ class VectorDBRetriever:
         """
         if self.shared_client is not None:
             client = self.shared_client
-            print("Using shared Qdrant client for retrieval.")
+            # print("Using shared Qdrant client for retrieval.")
         else:
             client = self.db_config.connect_to_qdrant()
 

@@ -7,6 +7,7 @@ from qdrant_client.grpc import ScoredPoint
 from sympy.printing.pytorch import torch
 from qdrant_client import QdrantClient
 
+from com.fever.rag.chunker.custom_edu_chunker import CustomEDUChunker
 from com.fever.rag.chunker.fixed_char_chunker import FixedCharChunker
 from com.fever.rag.chunker.fixed_token_chunker import FixedTokenChunker
 from com.fever.rag.chunker.sentence_chunker import SentenceChunker
@@ -152,10 +153,6 @@ class EvaluationMetrics:
     total_claims: int
     total_relevant_docs: int
     avg_retrieval_time: float
-
-
-class CustomEDUChunker:
-    pass
 
 
 def get_chunker(chunker_type: ChunkerType, **kwargs):

@@ -336,7 +336,7 @@ class VectorDBBuilder:
             print(f"  Connecting to Qdrant...")
             if self.shared_client is not None:
                 client = self.shared_client
-                print("Using shared Qdrant client")
+                # print("Using shared Qdrant client")
             else:
                 client = self.db_config.connect_to_qdrant()
 
