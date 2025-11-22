@@ -1,17 +1,41 @@
+import argparse
 import json
 import time
 from pathlib import Path
 from typing import List, Dict, Optional, Set
-from dataclasses import dataclass
-from tqdm import tqdm
 
+from qdrant_client import QdrantClient
+from tqdm import tqdm
 from com.fever.rag.chunker.base_chunker import BaseChunker
+from com.fever.rag.chunker.custom_edu_chunker import CustomEDUChunker
 from com.fever.rag.chunker.fixed_char_chunker import FixedCharChunker
+from com.fever.rag.chunker.fixed_token_chunker import FixedTokenChunker
 from com.fever.rag.chunker.sentence_chunker import SentenceChunker
 from com.fever.rag.evidence.vector_db_builder import VectorDBBuilder
 from com.fever.rag.retriever.retriever_config import VectorDBRetriever
-from com.fever.rag.utils.DataHelper import VectorDBConfig, EvaluationMetrics, RetrievalConfig, RetrievalStrategy
+from com.fever.rag.utils.data_helper import VectorDBConfig, EvaluationMetrics, RetrievalConfig, RetrievalStrategy, \
+    ChunkerType
 
+
+def get_chunker(chunker_type: ChunkerType, **kwargs):
+    """Factory to get chunker based on type."""
+    if chunker_type == ChunkerType.FIXED_CHAR:
+        return FixedCharChunker(overlap=kwargs["chunking_overlap"],size=kwargs["chunk_size"], **kwargs)
+    elif chunker_type == ChunkerType.FIXED_TOKEN:
+        return FixedTokenChunker(size=kwargs["max_tokens"], overlap=kwargs["chunking_overlap"], **kwargs)
+    elif chunker_type == ChunkerType.SENTENCE:
+        return SentenceChunker(**kwargs)
+    elif chunker_type == ChunkerType.CUSTOM_EDU:
+        return CustomEDUChunker(overlap=kwargs["chunking_overlap"], **kwargs)
+    else:
+        raise ValueError(f"Unsupported chunker type: {chunker_type}")
+
+CHUNKER_ARGS = {
+    ChunkerType.FIXED_CHAR: ["chunk_size","chunking_overlap"],
+    ChunkerType.FIXED_TOKEN: ["max_tokens","chunking_overlap"],
+    ChunkerType.SENTENCE: [],
+    ChunkerType.CUSTOM_EDU: ["model_path", "chunking_overlap"],
+}
 
 class RetrieverEvaluator:
     """Evaluates retriever performance using FEVER claims."""
@@ -26,7 +50,9 @@ class RetrieverEvaluator:
             output_file: str = "retrieval_evaluation_results.jsonl",
             k_values: List[int] = None,
             batch_size: int = 100,
-            max_files: Optional[int] = None
+            max_files: Optional[int] = None,
+            overlap: Optional[int] = None,
+            shared_client: Optional[QdrantClient] = None
     ):
         """
         Initialize the retriever evaluator.
@@ -51,15 +77,21 @@ class RetrieverEvaluator:
         self.k_values = k_values or [1, 3, 5, 10, 20]
         self.batch_size = batch_size
         self.max_files = max_files
+        self.overlap = overlap
+        self.shared_client = shared_client
 
         # Initialize components
         self.builder = VectorDBBuilder(
             wiki_dir=wiki_dir,
             batch_size=batch_size,
             max_files=max_files,
-            db_config=db_config
+            db_config=db_config,
+            shared_client=shared_client
         )
-        self.retriever = VectorDBRetriever(db_config=db_config)
+        self.retriever = VectorDBRetriever(
+            db_config=db_config,
+            shared_client=shared_client
+        )
 
         # Collection name
         self.collection_name = self._get_collection_name()
@@ -112,7 +144,7 @@ class RetrieverEvaluator:
 
         return evidence_articles
 
-    def _calculate_metrics(
+    def calculate_metrics(
             self,
             retrieved_articles: List[str],
             relevant_articles: Set[str],
@@ -237,7 +269,7 @@ class RetrieverEvaluator:
                     retrieved_articles.append(article_id)
 
             # Calculate metrics for this claim
-            claim_metrics = self._calculate_metrics(
+            claim_metrics = self.calculate_metrics(
                 retrieved_articles,
                 relevant_articles,
                 self.k_values
@@ -291,10 +323,22 @@ class RetrieverEvaluator:
 
     def save_results(self, metrics: EvaluationMetrics, retrieval_config: RetrievalConfig):
         """Save evaluation results to output file (append mode)."""
+
+        chunker_config = {}
+        if hasattr(self.chunker, 'chunk_size'):
+            chunker_config['chunk_size'] = self.chunker.chunk_size
+        if hasattr(self.chunker, 'max_tokens'):
+            chunker_config['max_tokens'] = self.chunker.max_tokens
+        if hasattr(self.chunker, 'overlap'):
+            chunker_config['overlap'] = self.chunker.overlap
+        if hasattr(self.chunker, 'model_path'):
+            chunker_config['model_path'] = str(self.chunker.model_path)
+
         result = {
             'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
             'embedding_model': self.embedding_model_name,
             'chunker': self.chunker.name,
+            'chunker_config': chunker_config,
             'collection_name': self.collection_name,
             'retrieval_strategy': retrieval_config.strategy.value,
             'retrieval_k': retrieval_config.k if retrieval_config.strategy == RetrievalStrategy.TOP_K else None,
@@ -305,7 +349,8 @@ class RetrieverEvaluator:
             'mean_reciprocal_rank': metrics.mean_reciprocal_rank,
             'precision_at_k': metrics.precision_at_k,
             'recall_at_k': metrics.recall_at_k,
-            'accuracy_at_k': metrics.accuracy_at_k
+            'accuracy_at_k': metrics.accuracy_at_k,
+            'overlap': self.overlap if self.overlap else 0
         }
 
         # Append to file
@@ -343,34 +388,86 @@ class RetrieverEvaluator:
 
         return metrics
 
-
-# Example usage
-if __name__ == "__main__":
-    # Configure
-    db_config = VectorDBConfig(
-        host="localhost",
-        port=6333,
-        use_grpc=True
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Evaluation of different chunking strategies for retrieval"
     )
 
-    for overlap in [10,20, 30, 50]:
-        chunker = FixedCharChunker(overlap=overlap, size=200)
+    #DB config
+    parser.add_argument("--qdrant_host", type=str, default="localhost",
+                        help="URL for Qdrant vector database")
+    parser.add_argument("--qdrant_port", type=int, default=6333,
+                        help="port for Qdrant vector database")
+    parser.add_argument("--qdrant_in_memory", type=bool, default=False,
+    help = "use qdrant in memory or not")
 
-        evaluator = RetrieverEvaluator(
-            claim_file_path="../../../../dataset/reduced_fever_data/paper_dev.jsonl",
-            embedding_model_name="sentence-transformers/all-MiniLM-L6-v2",
-            chunker=chunker,
-            db_config=db_config,
-            wiki_dir="../../../../dataset/reduced_fever_data/wiki",
-            output_file="retrieval_evaluation_results.jsonl",
-            k_values=[1, 3, 5, 10, 20],
-            max_files=None  # Process all files
-        )
+    #Chunker config
+    parser.add_argument("--embedding_model_name", type=str, default="sentence-transformers/all-MiniLM-L6-v2",
+                        help="embedding model name as in huggingface")
+    parser.add_argument("--chunking_overlap", type=int, default=0, help="overlap for chunking strategy (0,1,2,3...)")
+    parser.add_argument("--chunk_size", type=int, default=500, help="fixed character size to be included in chunk if fixed char chunker")
+    parser.add_argument("--max_tokens", type=int, default=128, help="token size if fixed token chunker")
 
-        # Run evaluation
-        retrieval_config = RetrievalConfig(
-            strategy=RetrievalStrategy.TOP_K,
-            k=20
-        )
+    parser.add_argument("--k_retrieval",type=int,
+    nargs="+", default=[1, 3, 5, 10, 20], help="Retrieving k-value (1,3,5,10,20)")
+    parser.add_argument("--wiki_dir", type=str, default="../../../../dataset/reduced_fever_data/wiki")
+    parser.add_argument("--output_file", type=str, default="../../../retrieval_evaluation_results.jsonl")
+    parser.add_argument("--model_path", type=str, default="../../../../edu_segmenter_linear/best_model")
+    parser.add_argument("--claim_file_path", type=str, default="../../../../dataset/reduced_fever_data/paper_dev.jsonl")
+    parser.add_argument(
+        "--chunker_type", type=lambda s: ChunkerType(s), choices=list(ChunkerType), default=ChunkerType.CUSTOM_EDU,
+    )
 
-        evaluator.run(build_db=True, retrieval_config=retrieval_config)
+    #retreival config
+    parser.add_argument("--retrieval_strategy", type=lambda s: RetrievalStrategy(s), choices=list(RetrievalStrategy),
+                        default=RetrievalStrategy.TOP_K)
+    parser.add_argument("--top_k", type=int, default=5, help="k value for top-k retrieval")
+    parser.add_argument("--threshold", type=float, default=0.5, help="Threshold for retrieval")
+
+    return parser.parse_args()
+
+
+if __name__ == "__main__":
+    # Configure
+    args = parse_args()
+
+    db_config = VectorDBConfig(
+        host=args.qdrant_host,
+        port=args.qdrant_port,
+        use_memory=args.qdrant_in_memory
+    )
+
+    shared_client = db_config.connect_to_qdrant() if args.qdrant_in_memory else None
+
+    #Define chunker
+    chunker_type = args.chunker_type
+    required_keys = CHUNKER_ARGS[chunker_type]
+    chunker_kwargs = {
+        key: getattr(args, key)
+        for key in required_keys
+        if getattr(args, key) is not None
+    }
+    print(chunker_kwargs)
+    chunker = get_chunker(chunker_type, **chunker_kwargs)
+
+    # Initialize evaluator
+    evaluator = RetrieverEvaluator(
+        claim_file_path=args.claim_file_path,
+        embedding_model_name=args.embedding_model_name,
+        chunker=chunker,
+        db_config=db_config,
+        wiki_dir=args.wiki_dir,
+        output_file=args.output_file,
+        k_values=args.k_retrieval,
+        max_files=None,
+        overlap=args.chunking_overlap,
+        shared_client=shared_client  # Pass shared client
+    )
+
+    retrieval_config = RetrievalConfig(
+        strategy=args.retrieval_strategy,
+        k=args.top_k if args.retrieval_strategy == RetrievalStrategy.TOP_K else None,
+        threshold=args.threshold if args.retrieval_strategy == RetrievalStrategy.THRESHOLD else None
+    )
+
+    evaluator.run(build_db=True, retrieval_config=retrieval_config)

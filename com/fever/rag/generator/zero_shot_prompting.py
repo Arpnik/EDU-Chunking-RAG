@@ -6,9 +6,8 @@ from pathlib import Path
 from typing import List, Dict, Optional
 from sklearn.metrics import accuracy_score, precision_recall_fscore_support, classification_report
 import requests
-
 from com.fever.rag.retriever.retriever_config import VectorDBRetriever
-from com.fever.rag.utils.DataHelper import ClassificationMetrics
+from com.fever.rag.utils.data_helper import ClassificationMetrics, RetrievalConfig
 
 
 class FEVERClassifier:
@@ -32,7 +31,11 @@ class FEVERClassifier:
         few_shot_examples: int = 0,
         examples_file: Optional[str] = None,
         temperature: float = 0.0,
-        retriever: VectorDBRetriever = None
+        retriever: VectorDBRetriever = None,
+        retrieval_config: Optional[RetrievalConfig] = None,
+        collection_name: Optional[str] = None,
+        embedding_model_name: Optional[str] = None,
+        max_evidence_chunks: int = 5
     ):
         """
         Initialize the classifier.
@@ -42,20 +45,39 @@ class FEVERClassifier:
             few_shot_examples: Number of examples to include in prompt (0 for zero-shot)
             examples_file: Path to JSONL file with examples for few-shot
             temperature: Sampling temperature for the model
+            retriever: VectorDBRetriever instance for evidence retrieval
+            retrieval_config: Configuration for retrieval (strategy, k, threshold)
+            collection_name: Name of the Qdrant collection
+            embedding_model_name: Name of the embedding model for retrieval
+            max_evidence_chunks: Maximum number of evidence chunks to include in prompt
         """
         self.model_name = model_name
         self.few_shot_examples = few_shot_examples
         self.temperature = temperature
         self.model_path = model_path
-        self.retriever = retriever
         self.examples = []
+        # Retrieval components
+        self.retriever = retriever
+        self.retrieval_config = retrieval_config
+        self.collection_name = collection_name
+        self.embedding_model_name = embedding_model_name
+        self.max_evidence_chunks = max_evidence_chunks
 
+        # Validate retrieval setup
+        if retriever is not None:
+            if retrieval_config is None or collection_name is None or embedding_model_name is None:
+                raise ValueError(
+                    "If retriever is provided, retrieval_config, collection_name, "
+                    "and embedding_model_name must also be provided"
+                )
+
+        self.examples = []
         if few_shot_examples > 0:
             if examples_file is None:
                 raise ValueError("examples_file required for few-shot prompting")
-            self.examples = self._load_examples(examples_file, few_shot_examples)
+            self.examples = self.load_examples(examples_file, few_shot_examples)
 
-    def _load_examples(self, file_path: str, n: int) -> List[Dict]:
+    def load_examples(self, file_path: str, n: int) -> List[Dict]:
         """Load n examples from JSONL file."""
         examples = []
         with open(file_path, 'r') as f:
@@ -65,7 +87,49 @@ class FEVERClassifier:
                 examples.append(json.loads(line))
         return examples
 
-    def _build_prompt(self, claim: str) -> str:
+    def retrieve_evidence(self, claim: str) -> str:
+        """
+        Retrieve evidence chunks for the claim using the VectorDBRetriever.
+
+        Args:
+            claim: The claim text to retrieve evidence for
+
+        Returns:
+            Formatted string containing evidence chunks
+        """
+        if not self.retriever:
+            return "No evidence available."
+
+        try:
+            # Use the retrieve method from VectorDBRetriever
+            result = self.retriever.retrieve(
+                claim=claim,
+                collection_name=self.collection_name,
+                embedding_model_name=self.embedding_model_name,
+                config=self.retrieval_config
+            )
+
+            # Format evidence chunks
+            if not result.chunks:
+                return "No evidence found."
+
+            evidence_texts = []
+            for i, chunk in enumerate(result.chunks[:self.max_evidence_chunks], 1):
+                article_id = chunk.payload.get('article_id', 'Unknown')
+                text = chunk.payload.get('text', '')
+                score = chunk.score
+
+                evidence_texts.append(
+                    f"[Evidence {i}] (Source: {article_id}, Relevance: {score:.3f})\n{text}"
+                )
+
+            return "\n\n".join(evidence_texts)
+
+        except Exception as e:
+            print(f"Warning: Evidence retrieval failed: {e}")
+            return "Evidence retrieval failed."
+
+    def build_prompt(self, claim: str) -> str:
         """Build prompt for classification."""
         prompt = "Classify the following claim into one of these categories:\n"
         prompt += "- SUPPORTS: The claim is supported by evidence\n"
@@ -79,15 +143,19 @@ class FEVERClassifier:
                 prompt += f"Claim: {ex['claim']}\n"
                 prompt += f"Label: {ex['label']}\n\n"
 
-        evidence = self.retriever(claim)
-        # Add query claim
-        prompt += f"Claim: {claim}\n"
-        prompt += f"Evidence: {evidence}\n"
+        # Retrieve and add evidence if retriever is available
+        if self.retriever:
+            evidence = self.retrieve_evidence(claim)
+            prompt += f"Claim: {claim}\n\n"
+            prompt += f"Evidence:\n{evidence}\n\n"
+        else:
+            prompt += f"Claim: {claim}\n\n"
+
         prompt += "Label:"
 
         return prompt
 
-    def _call_model(self, prompt: str) -> str:
+    def call_model(self, prompt: str) -> str:
         """
         Call the LLM model via Ollama API.
         """
@@ -120,8 +188,8 @@ class FEVERClassifier:
 
     def predict(self, claim: str) -> str:
         """Predict label for a single claim."""
-        prompt = self._build_prompt(claim)
-        response = self._call_model(prompt)
+        prompt = self.build_prompt(claim)
+        response = self.call_model(prompt)
         return self._parse_prediction(response)
 
     def evaluate(

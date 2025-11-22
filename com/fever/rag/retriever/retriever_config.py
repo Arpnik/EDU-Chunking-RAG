@@ -1,24 +1,27 @@
 from typing import Optional, List, Dict, Set
+
+from qdrant_client import QdrantClient
 from sentence_transformers import SentenceTransformer
 import time
-from com.fever.rag.utils.DataHelper import VectorDBConfig, RetrievalConfig, RetrievalResult, RetrievalStrategy, \
-     _get_device
+from com.fever.rag.utils.data_helper import VectorDBConfig, RetrievalConfig, RetrievalResult, RetrievalStrategy, \
+     get_device
 
 
 class VectorDBRetriever:
     """Retrieves chunks from Qdrant vector database."""
 
-    def __init__(self, db_config: VectorDBConfig):
+    def __init__(self, db_config: VectorDBConfig, shared_client: Optional[QdrantClient] = None):
         """
         Initialize the retriever.
 
         Args:
             db_config: Vector database configuration
-            device: Device for embeddings ('cuda', 'mps', 'cpu', or None for auto)
         """
         self.db_config = db_config
-        self.device = _get_device()
+        self.device = get_device()
         self._model_cache: Dict[str, SentenceTransformer] = {}
+        self.shared_client = shared_client
+
 
     def _get_embedding_model(self, model_name: str) -> SentenceTransformer:
         """Get or load an embedding model (with caching)."""
@@ -48,7 +51,12 @@ class VectorDBRetriever:
         Returns:
             RetrievalResult containing all retrieved chunks
         """
-        client = self.db_config.connect_to_qdrant()
+        if self.shared_client is not None:
+            client = self.shared_client
+            # print("Using shared Qdrant client for retrieval.")
+        else:
+            client = self.db_config.connect_to_qdrant()
+
         embedding_model = self._get_embedding_model(embedding_model_name)
 
         # Embed the claim

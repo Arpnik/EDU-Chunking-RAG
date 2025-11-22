@@ -1,18 +1,18 @@
 from typing import List, Dict, Tuple
-
 from com.fever.rag.chunker.base_chunker import BaseChunker
 
 
 class SentenceChunker(BaseChunker):
     """Each sentence is a chunk."""
 
-    def __init__(self):
+    def __init__(self,  **kwargs):
         super().__init__('sentence')
 
-    def chunk(self, text: str, sentences: List[str], **kwargs) -> List[Tuple[str, List[int]]]:
+    def chunk(self, cleaned_text: str,annotated_lines: str, **kwargs) -> List[Tuple[str, List[int]]]:
         """
         Returns: List of (chunk_text, [sentence_id]) tuples
         """
+        sentences = self.parse_annotated_lines(annotated_lines)
         return [(s, [i]) for i, s in enumerate(sentences) if s.strip()]
 
     def get_metadata(self, article_id: str, chunk_index: int, chunk_text: str,

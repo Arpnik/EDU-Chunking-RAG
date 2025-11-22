@@ -1,17 +1,23 @@
 from dataclasses import dataclass
 from enum import Enum
 from typing import Optional, List, Set, Dict
-
 import numpy as np
 from qdrant_client.grpc import ScoredPoint
 from sympy.printing.pytorch import torch
 from qdrant_client import QdrantClient
 
 
+
 class RetrievalStrategy(Enum):
     """Retrieval strategy types."""
     TOP_K = "top_k"
     THRESHOLD = "threshold"
+
+class ChunkerType(Enum):
+    FIXED_CHAR = "fixed_char"
+    FIXED_TOKEN = "fixed_token"
+    SENTENCE = "sentence"
+    CUSTOM_EDU = "custom_edu"
 
 
 @dataclass
@@ -20,6 +26,7 @@ class VectorDBConfig:
     host: str = "localhost"
     port: int = 6333
     use_grpc: bool = True
+    use_memory: bool = False
 
     @property
     def actual_port(self) -> int:
@@ -28,6 +35,9 @@ class VectorDBConfig:
 
     def connect_to_qdrant(self) -> QdrantClient:
         """Connect to Qdrant."""
+        if self.use_memory:
+            return QdrantClient(":memory:")
+
         if self.use_grpc:
             return QdrantClient(
                 host=self.host,
@@ -114,7 +124,7 @@ class ClassificationMetrics:
                 f"F1: {self.f1:.3f}\n"
                 f"Support: {self.support}")
 
-def _get_device() -> str:
+def get_device() -> str:
     """Automatically detect best available device."""
     if torch.cuda.is_available():
         device = "cuda"
@@ -138,4 +148,3 @@ class EvaluationMetrics:
     total_claims: int
     total_relevant_docs: int
     avg_retrieval_time: float
-
