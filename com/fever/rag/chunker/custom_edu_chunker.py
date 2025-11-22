@@ -12,6 +12,7 @@ import transformers
 from transformers import AutoTokenizer, DataCollatorForTokenClassification
 from peft import AutoPeftModelForTokenClassification
 from com.fever.rag.chunker.base_chunker import BaseChunker
+from com.fever.rag.models.BERTWithMLPClassifier import BERTWithMLPClassifier
 from com.fever.rag.utils.data_helper import get_device
 
 
@@ -26,34 +27,75 @@ class CustomEDUChunker(BaseChunker):
     Processes sentences line-by-line and combines EDUs into chunks with overlap control.
     """
 
-    def __init__(self, model_path: str, overlap: int = 0):
+    def __init__(self, model_path: str, overlap: int = 0, **kwargs):
         """
-        Initialize the EDU chunker.
+        Initialize the EDU chunker with auto-detection of model type.
 
         Args:
-            model_path: Path to the trained PEFT model directory (contains adapter + tokenizer)
-            overlap: Number of overlapping sentences between consecutive chunks (default: 0)
-                    - 0: No overlap, chunks are completely separate
-                    - 1: Adjacent chunks share 1 sentence
-                    - 2+: Adjacent chunks share multiple sentences
+            model_path: Path to the trained model directory
+            overlap: Number of overlapping sentences between chunks
         """
         super().__init__('edu_linear_head', model_path=model_path)
 
         self.model_path = Path(model_path)
         self.device = get_device()
-        self.overlap = max(0, overlap)  # Ensure non-negative
+        self.overlap = max(0, overlap)
 
-        # Load PEFT model and tokenizer
-        print(f"Loading EDU PEFT model from: {self.model_path}")
+        # Auto-detect model type from config
+        config_path = self.model_path / "chunker_config.json"
+        if config_path.exists():
+            import json
+            with open(config_path, 'r') as f:
+                self.model_config = json.load(f)
+            model_type = self.model_config.get("model_type", "linear_head")
+        else:
+            # Fallback: assume linear head if no config
+            print("⚠️ No chunker_config.json found, assuming linear_head model")
+            model_type = "linear_head"
+            self.model_config = {"model_type": "linear_head"}
+
+        print(f"Loading EDU model from: {self.model_path}")
+        print(f"Detected model type: {model_type}")
 
         transformers.logging.set_verbosity_error()
         self.tokenizer = AutoTokenizer.from_pretrained(str(self.model_path))
-        self.model = AutoPeftModelForTokenClassification.from_pretrained(str(self.model_path))
+
+        # Load model based on type
+        if model_type == "mlp_classifier":
+
+            mlp_dims = self.model_config.get("mlp_hidden_dims", [256, 128])
+            mlp_dropout = self.model_config.get("mlp_dropout", 0.3)
+
+            # Get base model name from config
+            peft_config_path = self.model_path / "adapter_config.json"
+            with open(peft_config_path, 'r') as f:
+                peft_config = json.load(f)
+            base_model_name = peft_config.get("base_model_name_or_path")
+            if base_model_name is None:
+                print("⚠️ base_model_name_or_path missing in adapter_config.json — defaulting to bert-base-uncased")
+                base_model_name = "bert-base-uncased"
+
+            base_model = BERTWithMLPClassifier(
+                model_name=base_model_name,
+                num_labels=2,
+                mlp_hidden_dims=mlp_dims,
+                mlp_dropout=mlp_dropout
+            )
+
+            from peft import PeftModel
+            self.model = PeftModel.from_pretrained(base_model, str(self.model_path))
+
+        else:
+            # Load linear head model (original)
+            from peft import AutoPeftModelForTokenClassification
+            self.model = AutoPeftModelForTokenClassification.from_pretrained(str(self.model_path))
+
         transformers.logging.set_verbosity_warning()
 
         self.model.to(self.device)
         self.model.eval()
-        print(f"✓ EDU PEFT model loaded on {self.device}")
+
+        print(f"✓ EDU model loaded on {self.device}")
         print(f"✓ Chunk overlap: {self.overlap} sentence(s)")
 
         # Data collator for batch processing

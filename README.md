@@ -211,7 +211,7 @@ Required dependencies:
 ### Basic Usage
 
 ```bash
-python retriever_evaluator.py \
+python com/fever/rag/retriever/retriever_evaluator.py \
     --chunker_type custom_edu \
     --model_path path/to/edu_model \
     --wiki_dir path/to/wiki \
@@ -221,7 +221,7 @@ python retriever_evaluator.py \
 ### Full Example with All Parameters
 
 ```bash
-python retriever_evaluator.py \
+python com/fever/rag/retriever/retriever_evaluator.py \
     --qdrant_host localhost \
     --qdrant_port 6333 \
     --qdrant_in_memory False \
@@ -254,7 +254,7 @@ python retriever_evaluator.py \
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `--chunker_type` | enum | `custom_edu` | Chunking strategy to use. Options: `custom_edu`, `fixed_char`, `fixed_token`, `sentence`, `paragraph` |
+| `--chunker_type` | enum | `custom_edu` | Chunking strategy to use. Options: `custom_edu`, `fixed_char`, `fixed_token`, `sentence` |
 | `--chunking_overlap` | int | `0` | Number of overlapping units between chunks (sentences/tokens/chars depending on chunker) |
 | `--chunk_size` | int | `500` | Fixed character size per chunk (only for `fixed_char` chunker) |
 | `--max_tokens` | int | `128` | Maximum tokens per chunk (only for `fixed_token` chunker) |
@@ -360,4 +360,4 @@ Results are appended to the output file in JSONL format
 - **Accuracy@K**: Whether at least one relevant document appears in top-K
 - **Mean Reciprocal Rank (MRR)**: Average of 1/rank for the first relevant document
 
-## 6. Test the pipeline end to end
+## 6. Test the pipeline end to end With LLM (generator)

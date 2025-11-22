@@ -1,16 +1,11 @@
 from dataclasses import dataclass
 from enum import Enum
 from typing import Optional, List, Set, Dict
-
 import numpy as np
 from qdrant_client.grpc import ScoredPoint
 from sympy.printing.pytorch import torch
 from qdrant_client import QdrantClient
 
-from com.fever.rag.chunker.custom_edu_chunker import CustomEDUChunker
-from com.fever.rag.chunker.fixed_char_chunker import FixedCharChunker
-from com.fever.rag.chunker.fixed_token_chunker import FixedTokenChunker
-from com.fever.rag.chunker.sentence_chunker import SentenceChunker
 
 
 class RetrievalStrategy(Enum):
@@ -153,24 +148,3 @@ class EvaluationMetrics:
     total_claims: int
     total_relevant_docs: int
     avg_retrieval_time: float
-
-
-def get_chunker(chunker_type: ChunkerType, **kwargs):
-    """Factory to get chunker based on type."""
-    if chunker_type == ChunkerType.FIXED_CHAR:
-        return FixedCharChunker(overlap=kwargs["chunking_overlap"],size=kwargs["chunk_size"], **kwargs)
-    elif chunker_type == ChunkerType.FIXED_TOKEN:
-        return FixedTokenChunker(overlap=kwargs["chunking_overlap"], **kwargs)
-    elif chunker_type == ChunkerType.SENTENCE:
-        return SentenceChunker(**kwargs)
-    elif chunker_type == ChunkerType.CUSTOM_EDU:
-        return CustomEDUChunker(overlap=kwargs["chunking_overlap"], **kwargs)
-    else:
-        raise ValueError(f"Unsupported chunker type: {chunker_type}")
-
-CHUNKER_ARGS = {
-    ChunkerType.FIXED_CHAR: ["chunk_size","chunking_overlap"],
-    ChunkerType.FIXED_TOKEN: ["max_tokens","chunking_overlap"],
-    ChunkerType.SENTENCE: [],
-    ChunkerType.CUSTOM_EDU: ["model_path", "chunking_overlap"],
-}

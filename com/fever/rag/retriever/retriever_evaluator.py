@@ -7,11 +7,35 @@ from typing import List, Dict, Optional, Set
 from qdrant_client import QdrantClient
 from tqdm import tqdm
 from com.fever.rag.chunker.base_chunker import BaseChunker
+from com.fever.rag.chunker.custom_edu_chunker import CustomEDUChunker
+from com.fever.rag.chunker.fixed_char_chunker import FixedCharChunker
+from com.fever.rag.chunker.fixed_token_chunker import FixedTokenChunker
+from com.fever.rag.chunker.sentence_chunker import SentenceChunker
 from com.fever.rag.evidence.vector_db_builder import VectorDBBuilder
 from com.fever.rag.retriever.retriever_config import VectorDBRetriever
 from com.fever.rag.utils.data_helper import VectorDBConfig, EvaluationMetrics, RetrievalConfig, RetrievalStrategy, \
-    ChunkerType, CHUNKER_ARGS, get_chunker
+    ChunkerType
 
+
+def get_chunker(chunker_type: ChunkerType, **kwargs):
+    """Factory to get chunker based on type."""
+    if chunker_type == ChunkerType.FIXED_CHAR:
+        return FixedCharChunker(overlap=kwargs["chunking_overlap"],size=kwargs["chunk_size"], **kwargs)
+    elif chunker_type == ChunkerType.FIXED_TOKEN:
+        return FixedTokenChunker(size=kwargs["max_tokens"], overlap=kwargs["chunking_overlap"], **kwargs)
+    elif chunker_type == ChunkerType.SENTENCE:
+        return SentenceChunker(**kwargs)
+    elif chunker_type == ChunkerType.CUSTOM_EDU:
+        return CustomEDUChunker(overlap=kwargs["chunking_overlap"], **kwargs)
+    else:
+        raise ValueError(f"Unsupported chunker type: {chunker_type}")
+
+CHUNKER_ARGS = {
+    ChunkerType.FIXED_CHAR: ["chunk_size","chunking_overlap"],
+    ChunkerType.FIXED_TOKEN: ["max_tokens","chunking_overlap"],
+    ChunkerType.SENTENCE: [],
+    ChunkerType.CUSTOM_EDU: ["model_path", "chunking_overlap"],
+}
 
 class RetrieverEvaluator:
     """Evaluates retriever performance using FEVER claims."""
@@ -299,10 +323,22 @@ class RetrieverEvaluator:
 
     def save_results(self, metrics: EvaluationMetrics, retrieval_config: RetrievalConfig):
         """Save evaluation results to output file (append mode)."""
+
+        chunker_config = {}
+        if hasattr(self.chunker, 'chunk_size'):
+            chunker_config['chunk_size'] = self.chunker.chunk_size
+        if hasattr(self.chunker, 'max_tokens'):
+            chunker_config['max_tokens'] = self.chunker.max_tokens
+        if hasattr(self.chunker, 'overlap'):
+            chunker_config['overlap'] = self.chunker.overlap
+        if hasattr(self.chunker, 'model_path'):
+            chunker_config['model_path'] = str(self.chunker.model_path)
+
         result = {
             'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
             'embedding_model': self.embedding_model_name,
             'chunker': self.chunker.name,
+            'chunker_config': chunker_config,
             'collection_name': self.collection_name,
             'retrieval_strategy': retrieval_config.strategy.value,
             'retrieval_k': retrieval_config.k if retrieval_config.strategy == RetrievalStrategy.TOP_K else None,
