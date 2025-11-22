@@ -1,0 +1,31 @@
+[project]
+name = "fever-rag"
+version = "0.1.0"
+description = "RAG-based claim verification system for FEVER dataset using Qdrant vector DB and Ollama LLMs"
+authors = [{ name = "Arpnik Singh" }]
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "torch==2.9.0",
+    "transformers==4.57.1",
+    "qdrant-client==1.15.1",
+    "sentence-transformers>=2.2.0",  # For embeddings (used in VectorDBBuilder)
+    "scikit-learn>=1.3.0",  # For metrics (used in FEVERClassifier)
+    "tqdm==4.67.1",
+    "peft==0.17.1",
+    "requests>=2.31.0",  # For Ollama API calls
+    "numpy>=1.24.0",  # General dependency
+]
+
+[tool.setuptools]
+package-dir = {"" = "."}
+
+[tool.setuptools.packages.find]
+include = ["com*"]
+
+[tool.uv]
+package = true
+
+[build-system]
+requires = ["setuptools>=68.0.0", "wheel"]
+build-backend = "setuptools.build_meta"

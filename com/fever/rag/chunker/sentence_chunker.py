@@ -5,7 +5,7 @@ from com.fever.rag.chunker.base_chunker import BaseChunker
 class SentenceChunker(BaseChunker):
     """Each sentence is a chunk."""
 
-    def __init__(self):
+    def __init__(self,  **kwargs):
         super().__init__('sentence')
 
     def chunk(self, cleaned_text: str,annotated_lines: str, **kwargs) -> List[Tuple[str, List[int]]]:

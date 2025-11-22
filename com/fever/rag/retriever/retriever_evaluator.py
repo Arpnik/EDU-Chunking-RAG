@@ -8,7 +8,8 @@ from com.fever.rag.chunker.base_chunker import BaseChunker
 from com.fever.rag.chunker.custom_edu_chunker import CustomEDUChunker
 from com.fever.rag.evidence.vector_db_builder import VectorDBBuilder
 from com.fever.rag.retriever.retriever_config import VectorDBRetriever
-from com.fever.rag.utils.data_helper import VectorDBConfig, EvaluationMetrics, RetrievalConfig, RetrievalStrategy, ChunkerType, CHUNKER_ARGS
+from com.fever.rag.utils.data_helper import VectorDBConfig, EvaluationMetrics, RetrievalConfig, RetrievalStrategy, \
+    ChunkerType, CHUNKER_ARGS, get_chunker
 
 
 class RetrieverEvaluator:
@@ -401,7 +402,8 @@ if __name__ == "__main__":
         for key in required_keys
         if getattr(args, key) is not None
     }
-    chunker = CustomEDUChunker(model_path = args.model_path, overlap=args.chunking_overlap)
+    print(chunker_kwargs)
+    chunker = get_chunker(chunker_type, **chunker_kwargs)
 
     # Initialize evaluator
     evaluator = RetrieverEvaluator(

@@ -4,7 +4,7 @@ from com.fever.rag.chunker.base_chunker import BaseChunker
 class FixedCharChunker(BaseChunker):
     """Fixed character size chunks with overlap - tracks sentence boundaries during chunking."""
 
-    def __init__(self, size: int = 500, overlap: int = 50):
+    def __init__(self, size: int = 500, overlap: int = 50,  **kwargs):
         super().__init__('fixed_char', size=size, overlap=overlap)
         self.size = size
         self.overlap = overlap
