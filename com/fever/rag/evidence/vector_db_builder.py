@@ -21,7 +21,8 @@ class VectorDBBuilder:
             max_files: Optional[int] = None,
             encode_batch_size: int = 128,
             use_grpc: bool = True,
-            db_config: VectorDBConfig = None
+            db_config: VectorDBConfig = None,
+            shared_client: Optional[QdrantClient] = None
     ):
         """
         Initialize the Vector DB Builder with Qdrant.
@@ -44,6 +45,7 @@ class VectorDBBuilder:
         self.embedding_models: List[str] = []
         self.chunkers: List[BaseChunker] = []
         self.device = get_device()
+        self.shared_client = shared_client  # Store it
 
         # Performance tracking
         self.timing_stats = {
@@ -332,7 +334,11 @@ class VectorDBBuilder:
             vector_size = embedding_model.get_sentence_embedding_dimension()
 
             print(f"  Connecting to Qdrant...")
-            client = self.db_config.connect_to_qdrant()
+            if self.shared_client is not None:
+                client = self.shared_client
+                print("Using shared Qdrant client")
+            else:
+                client = self.db_config.connect_to_qdrant()
 
             for chunker in self.chunkers:
                 collection_name = self._get_collection_name(embedding_model_name, chunker)

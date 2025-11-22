@@ -3,6 +3,8 @@ import json
 import time
 from pathlib import Path
 from typing import List, Dict, Optional, Set
+
+from qdrant_client import QdrantClient
 from tqdm import tqdm
 from com.fever.rag.chunker.base_chunker import BaseChunker
 from com.fever.rag.chunker.custom_edu_chunker import CustomEDUChunker
@@ -26,7 +28,8 @@ class RetrieverEvaluator:
             k_values: List[int] = None,
             batch_size: int = 100,
             max_files: Optional[int] = None,
-            overlap: Optional[int] = None
+            overlap: Optional[int] = None,
+            shared_client: Optional[QdrantClient] = None
     ):
         """
         Initialize the retriever evaluator.
@@ -52,15 +55,20 @@ class RetrieverEvaluator:
         self.batch_size = batch_size
         self.max_files = max_files
         self.overlap = overlap
+        self.shared_client = shared_client
 
         # Initialize components
         self.builder = VectorDBBuilder(
             wiki_dir=wiki_dir,
             batch_size=batch_size,
             max_files=max_files,
-            db_config=db_config
+            db_config=db_config,
+            shared_client=shared_client
         )
-        self.retriever = VectorDBRetriever(db_config=db_config)
+        self.retriever = VectorDBRetriever(
+            db_config=db_config,
+            shared_client=shared_client
+        )
 
         # Collection name
         self.collection_name = self._get_collection_name()
@@ -394,6 +402,8 @@ if __name__ == "__main__":
         use_memory=args.qdrant_in_memory
     )
 
+    shared_client = db_config.connect_to_qdrant() if args.qdrant_in_memory else None
+
     #Define chunker
     chunker_type = args.chunker_type
     required_keys = CHUNKER_ARGS[chunker_type]
@@ -415,7 +425,8 @@ if __name__ == "__main__":
         output_file=args.output_file,
         k_values=args.k_retrieval,
         max_files=None,
-        overlap=args.chunking_overlap
+        overlap=args.chunking_overlap,
+        shared_client=shared_client  # Pass shared client
     )
 
     retrieval_config = RetrievalConfig(
