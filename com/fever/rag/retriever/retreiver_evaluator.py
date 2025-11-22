@@ -3,19 +3,12 @@ import json
 import time
 from pathlib import Path
 from typing import List, Dict, Optional, Set
-from dataclasses import dataclass
-
-from qdrant_client.grpc import Custom
 from tqdm import tqdm
-
 from com.fever.rag.chunker.base_chunker import BaseChunker
 from com.fever.rag.chunker.custom_edu_chunker import CustomEDUChunker
-from com.fever.rag.chunker.fixed_char_chunker import FixedCharChunker
-from com.fever.rag.chunker.sentence_chunker import SentenceChunker
 from com.fever.rag.evidence.vector_db_builder import VectorDBBuilder
 from com.fever.rag.retriever.retriever_config import VectorDBRetriever
-from com.fever.rag.utils.data_helper import VectorDBConfig, EvaluationMetrics, RetrievalConfig, RetrievalStrategy, \
-    ChunkerType, CHUNKER_ARGS
+from com.fever.rag.utils.data_helper import VectorDBConfig, EvaluationMetrics, RetrievalConfig, RetrievalStrategy, ChunkerType, CHUNKER_ARGS
 
 
 class RetrieverEvaluator:
