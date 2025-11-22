@@ -2,7 +2,7 @@ from typing import Optional, List, Tuple, Dict
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams, PointStruct, OptimizersConfigDiff
 from com.fever.rag.chunker.base_chunker import BaseChunker
-from com.fever.rag.utils.DataHelper import get_device, VectorDBConfig
+from com.fever.rag.utils.data_helper import get_device, VectorDBConfig
 from com.fever.rag.utils.text_cleaner import TextCleaner
 from sentence_transformers import SentenceTransformer
 from pathlib import Path

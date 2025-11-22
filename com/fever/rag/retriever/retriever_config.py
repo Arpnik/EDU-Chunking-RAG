@@ -1,7 +1,7 @@
 from typing import Optional, List, Dict, Set
 from sentence_transformers import SentenceTransformer
 import time
-from com.fever.rag.utils.DataHelper import VectorDBConfig, RetrievalConfig, RetrievalResult, RetrievalStrategy, \
+from com.fever.rag.utils.data_helper import VectorDBConfig, RetrievalConfig, RetrievalResult, RetrievalStrategy, \
      get_device
 
 

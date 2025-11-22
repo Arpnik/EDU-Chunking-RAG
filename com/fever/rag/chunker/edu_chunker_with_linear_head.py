@@ -12,7 +12,7 @@ import transformers
 from transformers import AutoTokenizer, DataCollatorForTokenClassification
 from peft import AutoPeftModelForTokenClassification
 from com.fever.rag.chunker.base_chunker import BaseChunker
-from com.fever.rag.utils.DataHelper import get_device
+from com.fever.rag.utils.data_helper import get_device
 
 
 class EDUChunkerWithLinearHead(BaseChunker):
