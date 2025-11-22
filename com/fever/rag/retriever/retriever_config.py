@@ -14,7 +14,6 @@ class VectorDBRetriever:
 
         Args:
             db_config: Vector database configuration
-            device: Device for embeddings ('cuda', 'mps', 'cpu', or None for auto)
         """
         self.db_config = db_config
         self.device = get_device()

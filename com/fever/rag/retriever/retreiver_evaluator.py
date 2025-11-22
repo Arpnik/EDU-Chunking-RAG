@@ -1,17 +1,21 @@
+import argparse
 import json
 import time
 from pathlib import Path
 from typing import List, Dict, Optional, Set
 from dataclasses import dataclass
+
+from qdrant_client.grpc import Custom
 from tqdm import tqdm
 
 from com.fever.rag.chunker.base_chunker import BaseChunker
-from com.fever.rag.chunker.edu_chunker_with_linear_head import EDUChunkerWithLinearHead
+from com.fever.rag.chunker.custom_edu_chunker import CustomEDUChunker
 from com.fever.rag.chunker.fixed_char_chunker import FixedCharChunker
 from com.fever.rag.chunker.sentence_chunker import SentenceChunker
 from com.fever.rag.evidence.vector_db_builder import VectorDBBuilder
 from com.fever.rag.retriever.retriever_config import VectorDBRetriever
-from com.fever.rag.utils.data_helper import VectorDBConfig, EvaluationMetrics, RetrievalConfig, RetrievalStrategy
+from com.fever.rag.utils.data_helper import VectorDBConfig, EvaluationMetrics, RetrievalConfig, RetrievalStrategy, \
+    ChunkerType, CHUNKER_ARGS
 
 
 class RetrieverEvaluator:
@@ -347,51 +351,82 @@ class RetrieverEvaluator:
 
         return metrics
 
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Evaluation of different chunking strategies for retrieval"
+    )
+
+    #DB config
+    parser.add_argument("--qdrant_host", type=str, default="localhost",
+                        help="URL for Qdrant vector database")
+    parser.add_argument("--qdrant_port", type=int, default=6333,
+                        help="port for Qdrant vector database")
+    parser.add_argument("--qdrant_in_memory", type=bool, default=False,
+    help = "use qdrant in memory or not")
+
+    #Chunker config
+    parser.add_argument("--embedding_model_name", type=str, default="sentence-transformers/all-MiniLM-L6-v2",
+                        help="embedding model name as in huggingface")
+    parser.add_argument("--chunking_overlap", type=int, default=0, help="overlap for chunking strategy (0,1,2,3...)")
+    parser.add_argument("--chunk_size", type=int, default=500, help="fixed character size to be included in chunk if fixed char chunker")
+    parser.add_argument("--max_tokens", type=int, default=128, help="token size if fixed token chunker")
+
+    parser.add_argument("--k_retrieval",type=int,
+    nargs="+", default=[1, 3, 5, 10, 20], help="Retrieving k-value (1,3,5,10,20)")
+    parser.add_argument("--wiki_dir", type=str, default="../../../../dataset/reduced_fever_data/wiki")
+    parser.add_argument("--output_file", type=str, default="../../../retrieval_evaluation_results.jsonl")
+    parser.add_argument("--model_path", type=str, default="../../../../edu_segmenter_linear/best_model")
+    parser.add_argument("--claim_file_path", type=str, default="../../../../dataset/reduced_fever_data/paper_dev.jsonl")
+    parser.add_argument(
+        "--chunker_type", type=lambda s: ChunkerType(s), choices=list(ChunkerType), default=ChunkerType.CUSTOM_EDU,
+    )
+
+    #retreival config
+    parser.add_argument("--retrieval_strategy", type=lambda s: RetrievalStrategy(s), choices=list(RetrievalStrategy),
+                        default=RetrievalStrategy.TOP_K)
+    parser.add_argument("--top_k", type=int, default=5, help="k value for top-k retrieval")
+    parser.add_argument("--threshold", type=float, default=0.5, help="Threshold for retrieval")
+
+    return parser.parse_args()
+
 
 if __name__ == "__main__":
     # Configure
+    args = parse_args()
+
     db_config = VectorDBConfig(
-        host="localhost",
-        port=6333,
-        use_grpc=True
+        host=args.qdrant_host,
+        port=args.qdrant_port,
+        use_memory=args.qdrant_in_memory
     )
 
-    OVERLAP = [0]
-    for overlap in OVERLAP:
-        chunker = EDUChunkerWithLinearHead(model_path = "../../../../edu_segmenter_linear/best_model", overlap=overlap)
-        evaluator = RetrieverEvaluator(
-            claim_file_path="../../../../dataset/reduced_fever_data/paper_dev.jsonl",
-            embedding_model_name="sentence-transformers/all-MiniLM-L6-v2",
-            chunker=chunker,
-            db_config=db_config,
-            wiki_dir="../../../../dataset/reduced_fever_data/wiki",
-            output_file="../../../retrieval_evaluation_results.jsonl",
-            k_values=[1, 3, 5, 10, 20],
-            max_files=None,
-            overlap=overlap
-        )
+    #Define chunker
+    chunker_type = args.chunker_type
+    required_keys = CHUNKER_ARGS[chunker_type]
+    chunker_kwargs = {
+        key: getattr(args, key)
+        for key in required_keys
+        if getattr(args, key) is not None
+    }
+    chunker = CustomEDUChunker(model_path = args.model_path, overlap=args.chunking_overlap)
 
-        # Run evaluation
-        retrieval_config = RetrievalConfig(
-            strategy=RetrievalStrategy.TOP_K,
-            k=20
-        )
-        evaluator.run(build_db=True, retrieval_config=retrieval_config)
+    # Initialize evaluator
+    evaluator = RetrieverEvaluator(
+        claim_file_path=args.claim_file_path,
+        embedding_model_name=args.embedding_model_name,
+        chunker=chunker,
+        db_config=db_config,
+        wiki_dir=args.wiki_dir,
+        output_file=args.output_file,
+        k_values=args.k_retrieval,
+        max_files=None,
+        overlap=args.chunking_overlap
+    )
 
-    # chunker = SentenceChunker()
-    # evaluator = RetrieverEvaluator(
-    #     claim_file_path="../../../../dataset/reduced_fever_data/paper_dev.jsonl",
-    #     embedding_model_name="sentence-transformers/all-MiniLM-L6-v2",
-    #     chunker=chunker,
-    #     db_config=db_config,
-    #     wiki_dir="../../../../dataset/reduced_fever_data/wiki",
-    #     output_file="../../../retrieval_evaluation_results.jsonl",
-    #     k_values=[1, 3, 5, 10, 20],
-    #     max_files=None)
-    #
-    # # Run evaluation
-    # retrieval_config = RetrievalConfig(
-    #     strategy=RetrievalStrategy.TOP_K,
-    #     k=20
-    # )
-    # evaluator.run(build_db=True, retrieval_config=retrieval_config)
+    retrieval_config = RetrievalConfig(
+        strategy=args.retrieval_strategy,
+        k=args.top_k if args.retrieval_strategy == RetrievalStrategy.TOP_K else None,
+        threshold=args.threshold if args.retrieval_strategy == RetrievalStrategy.THRESHOLD else None
+    )
+
+    evaluator.run(build_db=True, retrieval_config=retrieval_config)

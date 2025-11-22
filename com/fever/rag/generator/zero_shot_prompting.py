@@ -6,9 +6,8 @@ from pathlib import Path
 from typing import List, Dict, Optional
 from sklearn.metrics import accuracy_score, precision_recall_fscore_support, classification_report
 import requests
-
 from com.fever.rag.retriever.retriever_config import VectorDBRetriever
-from com.fever.rag.utils.data_helper import ClassificationMetrics
+from com.fever.rag.utils.data_helper import ClassificationMetrics, RetrievalConfig
 
 
 class FEVERClassifier:

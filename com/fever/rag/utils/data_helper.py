@@ -7,11 +7,21 @@ from qdrant_client.grpc import ScoredPoint
 from sympy.printing.pytorch import torch
 from qdrant_client import QdrantClient
 
+from com.fever.rag.chunker.fixed_char_chunker import FixedCharChunker
+from com.fever.rag.chunker.fixed_token_chunker import FixedTokenChunker
+from com.fever.rag.chunker.sentence_chunker import SentenceChunker
+
 
 class RetrievalStrategy(Enum):
     """Retrieval strategy types."""
     TOP_K = "top_k"
     THRESHOLD = "threshold"
+
+class ChunkerType(Enum):
+    FIXED_CHAR = "train"
+    FIXED_TOKEN = "eval"
+    SENTENCE = "test"
+    CUSTOM_EDU = "custom_edu"
 
 
 @dataclass
@@ -20,6 +30,7 @@ class VectorDBConfig:
     host: str = "localhost"
     port: int = 6333
     use_grpc: bool = True
+    use_memory: bool = False
 
     @property
     def actual_port(self) -> int:
@@ -28,6 +39,9 @@ class VectorDBConfig:
 
     def connect_to_qdrant(self) -> QdrantClient:
         """Connect to Qdrant."""
+        if self.use_memory:
+            return QdrantClient(":memory:")
+
         if self.use_grpc:
             return QdrantClient(
                 host=self.host,
@@ -139,3 +153,27 @@ class EvaluationMetrics:
     total_relevant_docs: int
     avg_retrieval_time: float
 
+
+class CustomEDUChunker:
+    pass
+
+
+def get_chunker(chunker_type: ChunkerType, **kwargs):
+    """Factory to get chunker based on type."""
+    if chunker_type == ChunkerType.FIXED_CHAR:
+        return FixedCharChunker(**kwargs)
+    elif chunker_type == ChunkerType.FIXED_TOKEN:
+        return FixedTokenChunker(**kwargs)
+    elif chunker_type == ChunkerType.SENTENCE:
+        return SentenceChunker(**kwargs)
+    elif chunker_type == ChunkerType.CUSTOM_EDU:
+        return CustomEDUChunker(**kwargs)
+    else:
+        raise ValueError(f"Unsupported chunker type: {chunker_type}")
+
+CHUNKER_ARGS = {
+    ChunkerType.FIXED_CHAR: ["chunk_size","chunking_overlap"],
+    ChunkerType.FIXED_TOKEN: ["max_tokens","chunking_overlap"],
+    ChunkerType.SENTENCE: [],
+    ChunkerType.CUSTOM_EDU: ["model_path", "chunking_overlap"],
+}

@@ -15,7 +15,7 @@ from com.fever.rag.chunker.base_chunker import BaseChunker
 from com.fever.rag.utils.data_helper import get_device
 
 
-class EDUChunkerWithLinearHead(BaseChunker):
+class CustomEDUChunker(BaseChunker):
     """
     EDU-based chunker using a fine-tuned token classification model.
 
