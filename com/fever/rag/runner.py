@@ -47,8 +47,6 @@ class IntegratedRAGPipeline:
             llm_model_name: str = "gemma2:2b",
             temperature: float = 0.0,
             few_shot_examples: int = 0,
-            use_cot: bool = False,
-            retrieve_for_examples: bool = True,
             max_evidence_chunks: int = 5,
 
             # Evaluation config
@@ -74,7 +72,6 @@ class IntegratedRAGPipeline:
             temperature: Sampling temperature
             few_shot_examples: Number of examples per class
             use_cot: Enable chain-of-thought reasoning
-            retrieve_for_examples: Retrieve evidence for few-shot examples
             max_evidence_chunks: Max evidence chunks to include
             k_values: K values for retrieval evaluation
             max_claims: Maximum claims to evaluate
@@ -90,7 +87,6 @@ class IntegratedRAGPipeline:
         self.llm_model_name = llm_model_name
         self.temperature = temperature
         self.few_shot_examples = few_shot_examples
-        self.retrieve_for_examples = retrieve_for_examples
         self.max_evidence_chunks = max_evidence_chunks
         self.k_values = k_values or [1, 3, 5, 10, 20]
         self.max_claims = max_claims
@@ -186,8 +182,6 @@ class IntegratedRAGPipeline:
             collection_name=self.collection_name,
             embedding_model_name=self.embedding_model_name,
             max_evidence_chunks=self.max_evidence_chunks,
-            use_cot=self.use_cot,
-            retrieve_for_examples=self.retrieve_for_examples
         )
 
         # Run evaluation
@@ -295,8 +289,6 @@ def parse_args():
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--few_shot_examples", type=int, default=0,
                         help="Number of examples per class (0 for zero-shot)")
-    parser.add_argument("--use_cot", action="store_true",
-                        help="Enable chain-of-thought reasoning")
     parser.add_argument("--no_evidence_in_examples", action="store_true")
     parser.add_argument("--max_evidence_chunks", type=int, default=5)
     parser.add_argument("--max_claims", type=int, default=None)
@@ -346,8 +338,6 @@ if __name__ == "__main__":
         llm_model_name=args.llm_name,
         temperature=args.temperature,
         few_shot_examples=args.few_shot_examples,
-        use_cot=args.use_cot,
-        retrieve_for_examples=not args.no_evidence_in_examples,
         max_evidence_chunks=args.max_evidence_chunks,
         k_values=args.k_retrieval,
         max_claims=args.max_claims,
