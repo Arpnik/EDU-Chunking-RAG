@@ -375,14 +375,14 @@ ollama serve
 ```bash
 ollama pull gemma:2b
 ```
-
+ 
 ### 🚀 Running the Full RAG Pipeline
 
 Before running the full FEVER RAG pipeline, you must use the optimized retrieval parameters you discovered during the retrieval experiments (e.g., best chunker, best top-k or threshold, best embedding model, etc.).
 
 Once you know the best retrieval configuration, you can run the full pipeline by adding the following additional parameters related to classification and LLM generation:
 ```bash
-python -m com.fever.rag.pipeline.fever_rag_pipeline \
+python -m com/fever/rag/runner.py \
     --llm_name gemma:2b \
     --few_shot_examples 2 \
     --temperature 0.7 \
