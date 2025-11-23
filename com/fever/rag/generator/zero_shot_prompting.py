@@ -1,11 +1,13 @@
 """
 Simplified FEVER claim classifier for testing zero-shot and few-shot prompting.
+Using Ollama Python library instead of REST API calls.
 """
+import argparse
 import json
 from pathlib import Path
 from typing import List, Dict, Optional
 from sklearn.metrics import accuracy_score, precision_recall_fscore_support, classification_report
-import requests
+import ollama
 from com.fever.rag.retriever.retriever_config import VectorDBRetriever
 from com.fever.rag.utils.data_helper import ClassificationMetrics, RetrievalConfig
 
@@ -16,7 +18,7 @@ class FEVERClassifier:
 
     Usage:
         classifier = FEVERClassifier(
-            model_name="gpt-4",
+            model_name="gemma2:2b",
             few_shot_examples=5
         )
         metrics = classifier.evaluate("data/fever/dev.jsonl", max_claims=100)
@@ -27,7 +29,6 @@ class FEVERClassifier:
     def __init__(
         self,
         model_name: str = "gemma2:2b",
-        model_path: str = "http://localhost:11434/api/generate",
         few_shot_examples: int = 0,
         examples_file: Optional[str] = None,
         temperature: float = 0.0,
@@ -54,8 +55,7 @@ class FEVERClassifier:
         self.model_name = model_name
         self.few_shot_examples = few_shot_examples
         self.temperature = temperature
-        self.model_path = model_path
-        self.examples = []
+
         # Retrieval components
         self.retriever = retriever
         self.retrieval_config = retrieval_config
@@ -78,13 +78,43 @@ class FEVERClassifier:
             self.examples = self.load_examples(examples_file, few_shot_examples)
 
     def load_examples(self, file_path: str, n: int) -> List[Dict]:
-        """Load n examples from JSONL file."""
-        examples = []
+        """
+        Load n examples per class from JSONL file for balanced few-shot learning.
+
+        Args:
+            file_path: Path to JSONL file with labeled examples
+            n: Number of examples to load per class
+
+        Returns:
+            List of examples with n examples from each class (SUPPORTS, REFUTES, NOT ENOUGH INFO)
+        """
+        examples_by_class = {label: [] for label in self.LABELS}
+
+        # Read all lines and group by label
         with open(file_path, 'r') as f:
-            for i, line in enumerate(f):
-                if i >= n:
+            for line in f:
+                data = json.loads(line)
+                label = data.get('label')
+
+                # Only add if we haven't reached n for this class
+                if label in examples_by_class and len(examples_by_class[label]) < n:
+                    examples_by_class[label].append(data)
+
+                # Stop if we have n examples for all classes
+                if all(len(examples) >= n for examples in examples_by_class.values()):
                     break
-                examples.append(json.loads(line))
+
+        # Combine all examples in order: SUPPORTS, REFUTES, NOT ENOUGH INFO
+        examples = []
+        for label in self.LABELS:
+            examples.extend(examples_by_class[label])
+
+        # Print distribution for verification
+        print(f"Loaded {len(examples)} examples:")
+        for label in self.LABELS:
+            count = len(examples_by_class[label])
+            print(f"  {label}: {count} examples")
+
         return examples
 
     def retrieve_evidence(self, claim: str) -> str:
@@ -157,22 +187,19 @@ class FEVERClassifier:
 
     def call_model(self, prompt: str) -> str:
         """
-        Call the LLM model via Ollama API.
+        Call the LLM model via Ollama Python library.
         """
-        response = requests.post(
-            self.model_path,
-            json={
-                "model": self.model_name,
-                "prompt": prompt,
-                "stream": False,
-                "temperature": self.temperature
-            }
-        )
-
-        if response.status_code == 200:
-            return response.json()['response']
-        else:
-            raise Exception(f"API call failed with status {response.status_code}: {response.text}")
+        try:
+            response = ollama.generate(
+                model=self.model_name,
+                prompt=prompt,
+                options={
+                    'temperature': self.temperature
+                }
+            )
+            return response['response']
+        except Exception as e:
+            raise Exception(f"Ollama API call failed: {str(e)}")
 
     def _parse_prediction(self, response: str) -> str:
         """Parse model response to extract label."""
@@ -286,38 +313,3 @@ class FEVERClassifier:
                 }, f, indent=2)
 
         return metrics
-
-
-# Example usage
-if __name__ == "__main__":
-    # Zero-shot evaluation
-    print("Zero-shot Classification")
-    print("=" * 70)
-    classifier_zero = FEVERClassifier(
-        model_name="gemma2:2b",
-        model_path="http://localhost:11434/api/generate",
-        few_shot_examples=0
-    )
-    metrics_zero = classifier_zero.evaluate(
-        "../../../../dataset/reduced_fever_data/paper_dev.jsonl",
-        max_claims=100,
-        output_file="results/zero_shot.json"
-    )
-    print(metrics_zero)
-    print()
-    #
-    # # Few-shot evaluation
-    # print("Few-shot Classification (5 examples)")
-    # print("=" * 70)
-    # classifier_few = FEVERClassifier(
-    #     model_name="gemma2:2b",
-    #     model_path="http://localhost:11434/api/generate",
-    #     few_shot_examples=5,
-    #     examples_file="data/fever/train.jsonl"
-    # )
-    # metrics_few = classifier_few.evaluate(
-    #     "data/fever/dev.jsonl",
-    #     max_claims=100,
-    #     output_file="results/few_shot.json"
-    # )
-    # print(metrics_few)

@@ -9,12 +9,13 @@ dependencies = [
     "torch==2.9.0",
     "transformers==4.57.1",
     "qdrant-client==1.15.1",
-    "sentence-transformers>=2.2.0",  # For embeddings (used in VectorDBBuilder)
-    "scikit-learn>=1.3.0",  # For metrics (used in FEVERClassifier)
+    "sentence-transformers>=2.2.0",
+    "scikit-learn>=1.3.0",
     "tqdm==4.67.1",
     "peft==0.17.1",
-    "requests>=2.31.0",  # For Ollama API calls
-    "numpy>=1.24.0",  # General dependency
+    "requests>=2.31.0",
+    "numpy>=1.24.0",
+    "ollama==0.1.7"
 ]
 
 [tool.setuptools]

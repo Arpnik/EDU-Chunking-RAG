@@ -6,18 +6,13 @@ from qdrant_client.grpc import ScoredPoint
 from sympy.printing.pytorch import torch
 from qdrant_client import QdrantClient
 
+from com.fever.rag.chunker.base_chunker import BaseChunker
 
 
 class RetrievalStrategy(Enum):
     """Retrieval strategy types."""
     TOP_K = "top_k"
     THRESHOLD = "threshold"
-
-class ChunkerType(Enum):
-    FIXED_CHAR = "fixed_char"
-    FIXED_TOKEN = "fixed_token"
-    SENTENCE = "sentence"
-    CUSTOM_EDU = "custom_edu"
 
 
 @dataclass
@@ -148,3 +143,15 @@ class EvaluationMetrics:
     total_claims: int
     total_relevant_docs: int
     avg_retrieval_time: float
+
+def get_collection_name(embedding_model_name: str, chunker: BaseChunker) -> str:
+    """Generate collection name from model and chunker."""
+    model_short = embedding_model_name.split('/')[-1].split('-')[0].lower()
+    if 'minilm' in embedding_model_name.lower():
+        model_short = 'minilm'
+    elif 'mpnet' in embedding_model_name.lower():
+        model_short = 'mpnet'
+    elif 'multi-qa' in embedding_model_name.lower():
+        model_short = 'multiqa'
+
+    return f"{model_short}_{chunker.name}_chunks"
