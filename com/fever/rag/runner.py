@@ -346,3 +346,5 @@ if __name__ == "__main__":
 
     # Run the full pipeline
     results = pipeline.run_full_pipeline()
+    print(results)
+    print("Done")
