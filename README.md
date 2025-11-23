@@ -367,3 +367,31 @@ Results are appended to the output file in JSONL format
 brew install ollama
 ```
 
+### Run ollama server
+```bash
+ollama serve
+```
+### Pull your favorite LLM
+```bash
+ollama pull gemma:2b
+```
+
+### 🚀 Running the Full RAG Pipeline
+
+Before running the full FEVER RAG pipeline, you must use the optimized retrieval parameters you discovered during the retrieval experiments (e.g., best chunker, best top-k or threshold, best embedding model, etc.).
+
+Once you know the best retrieval configuration, you can run the full pipeline by adding the following additional parameters related to classification and LLM generation:
+```bash
+python -m com.fever.rag.pipeline.fever_rag_pipeline \
+    --llm_name gemma:2b \
+    --few_shot_examples 2 \
+    --temperature 0.7 \
+    --max_evidence_chunks 0.9
+```
+
+| Parameter                   | Example | Meaning                                                                                                      | When to Use                                                                       |
+| --------------------------- | --- |--------------------------------------------------------------------------------------------------------------| --------------------------------------------------------------------------------- |
+| **`--llm_name`**            | `gemma:2b` | Specifies which LLM (via Ollama) will classify FEVER claims using the retrieved evidence.                    | Choose a model based on speed vs. accuracy trade-off.                             |
+| **`--few_shot_examples`**   | `2` | Number of labelled FEVER examples (per class) included in the prompt for few-shot learning. `0` = zero-shot. | Use 1–5 for better accuracy if latency is acceptable.                             |
+| **`--temperature`**         | `0.7` | Controls output randomness. Lower values = deterministic; higher = more varied.                              | FEVER usually benefits from **0.0–0.3** for stable labels.                        |
+| **`--max_evidence_chunks`** | `5` | Maximum number of retrieved chunks given to the LLM as evidence. Can be integer.                             | Increase if retrieval returns useful evidence; decrease for faster LLM inference. |

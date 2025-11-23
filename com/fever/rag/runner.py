@@ -289,7 +289,6 @@ def parse_args():
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--few_shot_examples", type=int, default=0,
                         help="Number of examples per class (0 for zero-shot)")
-    parser.add_argument("--no_evidence_in_examples", action="store_true")
     parser.add_argument("--max_evidence_chunks", type=int, default=5)
     parser.add_argument("--max_claims", type=int, default=None)
 
