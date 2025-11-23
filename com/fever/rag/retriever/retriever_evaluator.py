@@ -7,35 +7,12 @@ from typing import List, Dict, Optional, Set
 from qdrant_client import QdrantClient
 from tqdm import tqdm
 from com.fever.rag.chunker.base_chunker import BaseChunker
-from com.fever.rag.chunker.custom_edu_chunker import CustomEDUChunker
-from com.fever.rag.chunker.fixed_char_chunker import FixedCharChunker
-from com.fever.rag.chunker.fixed_token_chunker import FixedTokenChunker
-from com.fever.rag.chunker.sentence_chunker import SentenceChunker
 from com.fever.rag.evidence.vector_db_builder import VectorDBBuilder
 from com.fever.rag.retriever.retriever_config import VectorDBRetriever
+from com.fever.rag.utils.chunker_helper import get_chunker, CHUNKER_ARGS, ChunkerType
 from com.fever.rag.utils.data_helper import VectorDBConfig, EvaluationMetrics, RetrievalConfig, RetrievalStrategy, \
-    ChunkerType
+    get_collection_name
 
-
-def get_chunker(chunker_type: ChunkerType, **kwargs):
-    """Factory to get chunker based on type."""
-    if chunker_type == ChunkerType.FIXED_CHAR:
-        return FixedCharChunker(overlap=kwargs["chunking_overlap"],size=kwargs["chunk_size"], **kwargs)
-    elif chunker_type == ChunkerType.FIXED_TOKEN:
-        return FixedTokenChunker(size=kwargs["max_tokens"], overlap=kwargs["chunking_overlap"], **kwargs)
-    elif chunker_type == ChunkerType.SENTENCE:
-        return SentenceChunker(**kwargs)
-    elif chunker_type == ChunkerType.CUSTOM_EDU:
-        return CustomEDUChunker(overlap=kwargs["chunking_overlap"], **kwargs)
-    else:
-        raise ValueError(f"Unsupported chunker type: {chunker_type}")
-
-CHUNKER_ARGS = {
-    ChunkerType.FIXED_CHAR: ["chunk_size","chunking_overlap"],
-    ChunkerType.FIXED_TOKEN: ["max_tokens","chunking_overlap"],
-    ChunkerType.SENTENCE: [],
-    ChunkerType.CUSTOM_EDU: ["model_path", "chunking_overlap"],
-}
 
 class RetrieverEvaluator:
     """Evaluates retriever performance using FEVER claims."""
@@ -94,19 +71,7 @@ class RetrieverEvaluator:
         )
 
         # Collection name
-        self.collection_name = self._get_collection_name()
-
-    def _get_collection_name(self) -> str:
-        """Generate collection name from model and chunker."""
-        model_short = self.embedding_model_name.split('/')[-1].split('-')[0].lower()
-        if 'minilm' in self.embedding_model_name.lower():
-            model_short = 'minilm'
-        elif 'mpnet' in self.embedding_model_name.lower():
-            model_short = 'mpnet'
-        elif 'multi-qa' in self.embedding_model_name.lower():
-            model_short = 'multiqa'
-
-        return f"{model_short}_{self.chunker.name}_chunks"
+        self.collection_name = get_collection_name(self.embedding_model_name, self.chunker)
 
     def _load_claims(self) -> List[Dict]:
         """Load claims from FEVER JSONL file."""

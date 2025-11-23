@@ -361,3 +361,9 @@ Results are appended to the output file in JSONL format
 - **Mean Reciprocal Rank (MRR)**: Average of 1/rank for the first relevant document
 
 ## 6. Test the pipeline end to end With LLM (generator)
+
+### Installation
+```bash 
+brew install ollama
+```
+

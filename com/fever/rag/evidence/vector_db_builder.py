@@ -20,7 +20,6 @@ class VectorDBBuilder:
             batch_size: int = 100,
             max_files: Optional[int] = None,
             encode_batch_size: int = 128,
-            use_grpc: bool = True,
             db_config: VectorDBConfig = None,
             shared_client: Optional[QdrantClient] = None
     ):
@@ -34,14 +33,12 @@ class VectorDBBuilder:
             batch_size: Number of chunks to batch before inserting
             max_files: Limit number of files to process (None = all)
             encode_batch_size: Batch size for embedding generation
-            use_grpc: Use gRPC for faster communication (recommended)
         """
         self.wiki_dir = wiki_dir
         self.db_config = db_config
         self.batch_size = batch_size
         self.max_files = max_files
         self.encode_batch_size = encode_batch_size
-        self.use_grpc = use_grpc
         self.embedding_models: List[str] = []
         self.chunkers: List[BaseChunker] = []
         self.device = get_device()
@@ -304,7 +301,7 @@ class VectorDBBuilder:
         print(f"\nConfiguration:")
         print(f"  Wiki directory: {self.wiki_dir}")
         print(f"  Qdrant: {self.db_config.host}:{self.db_config.port}")
-        print(f"  Protocol: {'gRPC' if self.use_grpc else 'HTTP'}")
+        print(f"  Protocol: {'gRPC' if self.db_config.use_grpc else 'HTTP'}")
         print(f"  Embedding models: {self.embedding_models}")
         print(f"  Chunking methods: {self.chunkers}")
         print(f"  Total collections: {len(self.embedding_models) * len(self.chunkers)}")
