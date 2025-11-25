@@ -6,10 +6,50 @@ import argparse
 import json
 from pathlib import Path
 from typing import List, Dict, Optional
+
+import os
+import time
+import subprocess
+import urllib.request
+
 from sklearn.metrics import accuracy_score, precision_recall_fscore_support, classification_report
 import ollama
 from com.fever.rag.retriever.retriever_config import VectorDBRetriever
 from com.fever.rag.utils.data_helper import ClassificationMetrics, RetrievalConfig
+
+
+def ensure_ollama_running() -> bool:
+    """Check if Ollama is running, restart if needed (for Colab runtime)."""
+    try:
+        # Quick health check
+        urllib.request.urlopen("http://127.0.0.1:11434/api/tags", timeout=2)
+        return True  # Already running
+    except Exception:
+        print("Ollama server not responding, restarting...")
+
+    # Kill any zombie processes (no error if none exist)
+    subprocess.run(["pkill", "-f", "ollama"], check=False)
+    time.sleep(2)
+
+    # Restart Ollama server in the background
+    subprocess.Popen(
+        ["ollama", "serve"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        preexec_fn=os.setpgrp,  # detach from Python process
+    )
+
+    # Wait for it to come up
+    for _ in range(20):
+        try:
+            urllib.request.urlopen("http://127.0.0.1:11434/api/tags", timeout=1)
+            print("  Ollama restarted successfully")
+            return True
+        except Exception:
+            time.sleep(1)
+
+    print("  Failed to restart Ollama")
+    return False
 
 
 class FEVERClassifier:
@@ -186,20 +226,39 @@ class FEVERClassifier:
         return prompt
 
     def call_model(self, prompt: str) -> str:
-        """
-        Call the LLM model via Ollama Python library.
-        """
+      
+        """Call the LLM model via Ollama Python library with health checks."""
+        # Check server health before making request
+        ensure_ollama_running()
+
         try:
             response = ollama.generate(
                 model=self.model_name,
                 prompt=prompt,
                 options={
-                    'temperature': self.temperature
-                }
+                    "temperature": self.temperature,
+                    "keep_alive": "1h",  # keep model loaded in Colab
+                },
             )
-            return response['response']
+            return response["response"]
         except Exception as e:
-            raise Exception(f"Ollama API call failed: {str(e)}")
+            # Try restarting and retry once
+            print(f"Ollama call failed: {e}. Trying to restart server...")
+            if ensure_ollama_running():
+                response = ollama.generate(
+                    model=self.model_name,
+                    prompt=prompt,
+                    options={
+                        "temperature": self.temperature,
+                        "keep_alive": "1h",
+                    },
+                )
+                return response["response"]
+
+            # If still failing, bubble up the error
+            raise Exception(f"Ollama API call failed after restart attempt: {str(e)}")
+
+      
 
     def _parse_prediction(self, response: str) -> str:
         """Parse model response to extract label."""
