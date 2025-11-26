@@ -14,7 +14,6 @@ from peft import AutoPeftModelForTokenClassification
 from com.fever.rag.chunker.base_chunker import BaseChunker
 from com.fever.rag.models.BERTWithMLPClassifier import BERTWithMLPClassifier
 from com.fever.rag.utils.data_helper import get_device
-from com.fever.rag.utils.text_cleaner import TextCleaner
 
 
 class CustomEDUChunker(BaseChunker):
@@ -342,46 +341,11 @@ class CustomEDUChunker(BaseChunker):
 
         return merged_chunks
 
-    @staticmethod
-    def parse_annotated_lines_with_ids(annotated_lines: str) -> List[Tuple[int, str]]:
-        """
-        Parse article lines into (sentence_id, text) tuples.
-
-        Args:
-            annotated_lines: Tab-separated format "sentence_id\tsentence_text"
-
-        Returns:
-            List of (original_sentence_id, cleaned_text) tuples
-        """
-        if not annotated_lines:
-            return []
-
-        sentences_with_ids = []
-        for line in annotated_lines.strip().split('\n'):
-            if not line or not line.strip():
-                continue
-
-            parts = line.split('\t')
-            if len(parts) >= 2:
-                try:
-                    # Parse the sentence ID from FEVER format
-                    sentence_id = int(parts[0])
-                    sentence_text = TextCleaner.clean(parts[1])
-
-                    if sentence_text:  # Only include non-empty sentences
-                        sentences_with_ids.append((sentence_id, sentence_text))
-
-                except ValueError:
-                    # Skip lines where sentence_id isn't a valid integer
-                    continue
-
-        return sentences_with_ids
-
     def chunk(
-            self,
-            cleaned_text: str,
-            annotated_lines: str,
-            **kwargs
+        self,
+        cleaned_text: str,
+        annotated_lines: str,
+        **kwargs
     ) -> List[Tuple[str, List[int]]]:
         """
         Chunk text into EDUs using the trained model, processing line by line.
@@ -395,37 +359,20 @@ class CustomEDUChunker(BaseChunker):
         Returns:
             List of (chunk_text, sentence_ids) tuples
         """
-        # Parse annotated lines WITH ORIGINAL IDS preserved
-        lines_with_ids = self.parse_annotated_lines_with_ids(annotated_lines)
+        # Parse annotated lines into (id, text) tuples
+        lines = self.parse_annotated_lines(annotated_lines)
 
-        if not lines_with_ids:
+        if not lines:
             return []
 
+        lines_with_number = [(i, line) for i, line in enumerate(lines)]
         # Step 1: Process each line and extract EDUs
-        # lines_with_ids is already in format: [(sentence_id, text), ...]
-        edus_with_ids = self.process_lines_to_edus(lines_with_ids)
+        edus_with_ids = self.process_lines_to_edus(lines_with_number)
 
-        # Step 2: Create chunks based on overlap setting
-        if self.overlap == 0:
-            # Group EDUs by sentence ID and combine them
-            sentence_chunks = {}
-            for edu_text, sent_id in edus_with_ids:
-                if sent_id not in sentence_chunks:
-                    sentence_chunks[sent_id] = []
-                sentence_chunks[sent_id].append(edu_text)
-
-            # Create one chunk per sentence (matching sentence chunker)
-            chunks = []
-            for sent_id in sorted(sentence_chunks.keys()):
-                chunk_text = " ".join(sentence_chunks[sent_id])
-                chunks.append((chunk_text, [sent_id]))
-
-            return chunks
-
-        # With overlap: create sliding window chunks
+        # Step 2: Create chunks with overlap
         chunks = self.create_chunks_with_overlap(edus_with_ids)
 
-        # Merge chunks with excessive overlap
+        # Step 3: Merge chunks with excessive overlap
         merged_chunks = self.merge_duplicate_chunks(chunks)
 
         return merged_chunks
