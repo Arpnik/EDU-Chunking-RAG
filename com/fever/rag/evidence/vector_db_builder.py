@@ -386,6 +386,8 @@ class VectorDBBuilder:
                     chunker.stats.print_stats()
                     stats_filename = f"statistics_{chunker.name}_{embedding_model_name.split('/')[-1]}.json"
                     chunker.stats.save_to_file(stats_filename)
+                if chunker.boundary_count is not None:
+                    print("total boundaries found: ", chunker.boundary_count)
 
         print("\n" + "=" * 70)
         print("BUILD COMPLETE!")
