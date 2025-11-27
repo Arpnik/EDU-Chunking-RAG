@@ -13,6 +13,7 @@ from transformers import AutoTokenizer, DataCollatorForTokenClassification
 from peft import AutoPeftModelForTokenClassification
 from com.fever.rag.chunker.base_chunker import BaseChunker
 from com.fever.rag.models.BERTWithMLPClassifier import BERTWithMLPClassifier
+from com.fever.rag.utils.chunker_stats import ChunkerStatistics
 from com.fever.rag.utils.data_helper import get_device
 
 
@@ -36,7 +37,6 @@ class CustomEDUChunker(BaseChunker):
             overlap: Number of overlapping sentences between chunks
         """
         super().__init__('edu_linear_head', model_path=model_path)
-
         self.model_path = Path(model_path)
         self.device = get_device()
         self.overlap = max(0, overlap)
@@ -94,6 +94,7 @@ class CustomEDUChunker(BaseChunker):
 
         self.model.to(self.device)
         self.model.eval()
+        self.stats = ChunkerStatistics('custom_edu_chunker')
 
         print(f"✓ EDU model loaded on {self.device}")
         print(f"✓ Chunk overlap: {self.overlap} sentence(s)")
@@ -229,6 +230,8 @@ class CustomEDUChunker(BaseChunker):
 
             # Split line into EDUs
             edus = self.split_line_into_edus(line_text, predictions)
+
+            self.stats.record_sentence(line_text, edu_count=len(edus))
 
             # Add all EDUs from this sentence
             for edu in edus:
@@ -374,6 +377,12 @@ class CustomEDUChunker(BaseChunker):
 
         # Step 3: Merge chunks with excessive overlap
         merged_chunks = self.merge_duplicate_chunks(chunks)
+
+        for chunk_text, sentence_ids in merged_chunks:
+            # Count EDUs in this chunk
+            edu_count = sum(1 for edu, _ in edus_with_ids
+                            if any(sid in sentence_ids for sid in [_]))
+            self.stats.record_chunk(chunk_text, sentence_ids, edu_count=edu_count)
 
         return merged_chunks
 

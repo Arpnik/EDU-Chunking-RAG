@@ -381,6 +381,12 @@ class VectorDBBuilder:
                 print(f"    Cleaning issues: {cleaning_issues:,}")
                 print(f"    Final count: {collection_info.points_count:,} documents")
 
+                print(f"\n  Collecting statistics for {chunker.name}...")
+                if chunker.stats is not None:
+                    chunker.stats.print_stats()
+                    stats_filename = f"statistics_{chunker.name}_{embedding_model_name.split('/')[-1]}.json"
+                    chunker.stats.save_to_file(stats_filename)
+
         print("\n" + "=" * 70)
         print("BUILD COMPLETE!")
         print("=" * 70)
