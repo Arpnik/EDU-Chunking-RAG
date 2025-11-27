@@ -12,7 +12,7 @@ import time
 import subprocess
 import urllib.request
 
-from sklearn.metrics import accuracy_score, precision_recall_fscore_support, classification_report
+from sklearn.metrics import accuracy_score, precision_recall_fscore_support, classification_report, confusion_matrix
 import ollama
 from com.fever.rag.retriever.retriever_config import VectorDBRetriever
 from com.fever.rag.utils.data_helper import ClassificationMetrics, RetrievalConfig
@@ -350,6 +350,19 @@ class FEVERClassifier:
             per_class_metrics=per_class
         )
 
+        print("\n" + "=" * 70)
+        print("EVALUATION RESULTS")
+        print("=" * 70)
+        print(f"\n🎯 Overall Metrics:")
+        print(f"  Accuracy:  {accuracy:.4f}")
+        print(f"  Precision: {precision:.4f}")
+        print(f"  Recall:    {recall:.4f}")
+        print(f"  F1-Score:  {f1:.4f}")
+        print(f"  Support:   {len(true_labels)}")
+
+        # Print confusion matrix
+        self.print_confusion_matrix(true_labels, pred_labels)
+
         # Save results if requested
         if output_file:
             Path(output_file).parent.mkdir(parents=True, exist_ok=True)
@@ -372,3 +385,54 @@ class FEVERClassifier:
                 }, f, indent=2)
 
         return metrics
+
+    def print_confusion_matrix(self, y_true: List[str], y_pred: List[str]):
+        """
+        Print a formatted confusion matrix for FEVER classification.
+
+        Args:
+            y_true: True labels
+            y_pred: Predicted labels
+        """
+        labels = self.LABELS  # ["SUPPORTS", "REFUTES", "NOT ENOUGH INFO"]
+        cm = confusion_matrix(y_true, y_pred, labels=labels)
+
+        print("\n" + "=" * 70)
+        print("📊 CONFUSION MATRIX")
+        print("=" * 70)
+
+        # Header
+        header = "Actual \\ Predicted".ljust(20)
+        for label in labels:
+            header += label[:12].center(15)
+        print(header)
+        print("-" * 70)
+
+        # Rows
+        for i, label in enumerate(labels):
+            row = label[:18].ljust(20)
+            for j in range(len(labels)):
+                row += str(cm[i][j]).center(15)
+            print(row)
+
+        print("-" * 70)
+
+        # Per-class metrics from confusion matrix
+        print("\n📈 PER-CLASS METRICS (from Confusion Matrix)")
+        print("-" * 70)
+        print(f"{'Class':<20} {'Precision':<12} {'Recall':<12} {'F1-Score':<12} {'Support':<10}")
+        print("-" * 70)
+
+        for i, label in enumerate(labels):
+            tp = cm[i][i]
+            fp = cm[:, i].sum() - tp
+            fn = cm[i, :].sum() - tp
+            support = cm[i, :].sum()
+
+            precision = tp / (tp + fp) if (tp + fp) > 0 else 0
+            recall = tp / (tp + fn) if (tp + fn) > 0 else 0
+            f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
+
+            print(f"{label:<20} {precision:<12.4f} {recall:<12.4f} {f1:<12.4f} {support:<10}")
+
+        print("=" * 70 + "\n")
