@@ -21,13 +21,21 @@ class CustomEDUChunker(BaseChunker):
     Tracks comprehensive statistics about EDU segmentation and chunking.
     """
 
-    def __init__(self, model_path: str, overlap: int = 0, **kwargs):
-        """Initialize the EDU chunker with statistics tracking."""
+    def __init__(self, model_path: str, edus_per_chunk: int = 5, overlap: int = 0, **kwargs):
+        """
+        Initialize the EDU chunker with statistics tracking.
+
+        Args:
+            model_path: Path to the trained EDU segmentation model
+            edus_per_chunk: Number of consecutive EDUs to combine per chunk (default: 5)
+            overlap: Number of EDUs to overlap between chunks (default: 0)
+        """
         super().__init__('edu_linear_head', model_path=model_path)
         self.model_path = Path(model_path)
         self.device = get_device()
+        self.edus_per_chunk = max(1, edus_per_chunk)
         self.overlap = max(0, overlap)
-        self.boundary_count =0
+        self.boundary_count = 0
         # Initialize statistics tracker
         self.stats = ChunkerStatistics('custom_edu_chunker')
 
@@ -81,7 +89,8 @@ class CustomEDUChunker(BaseChunker):
         self.model.eval()
 
         print(f"✓ EDU model loaded on {self.device}")
-        print(f"✓ Chunk overlap: {self.overlap} sentence(s)")
+        print(f"✓ EDUs per chunk: {self.edus_per_chunk}")
+        print(f"✓ Chunk overlap: {self.overlap} EDU(s)")
 
         self.data_collator = DataCollatorForTokenClassification(
             tokenizer=self.tokenizer,
@@ -218,7 +227,9 @@ class CustomEDUChunker(BaseChunker):
         edus_with_ids: List[Tuple[str, int]]
     ) -> List[Tuple[str, List[int]]]:
         """
-        Combine EDUs into chunks with configurable sentence-level overlap.
+        Combine consecutive EDUs into chunks, crossing sentence boundaries.
+
+        This is the FIXED version that properly chunks by EDUs, not sentences.
 
         Returns:
             List of (chunk_text, sentence_ids) tuples
@@ -226,71 +237,51 @@ class CustomEDUChunker(BaseChunker):
         if not edus_with_ids:
             return []
 
-        # Group EDUs by sentence ID
-        sentence_edus = {}
-        for edu_text, sent_id in edus_with_ids:
-            if sent_id not in sentence_edus:
-                sentence_edus[sent_id] = []
-            sentence_edus[sent_id].append(edu_text)
-
-        sentence_ids = sorted(sentence_edus.keys())
+        chunks = []
 
         if self.overlap == 0:
-            # No overlap: each sentence becomes its own chunk
-            chunks = []
-            for sent_id in sentence_ids:
-                chunk_text = " ".join(sentence_edus[sent_id])
-                chunks.append((chunk_text, [sent_id]))
-            return chunks
+            # No overlap: combine N consecutive EDUs into non-overlapping chunks
+            i = 0
+            while i < len(edus_with_ids):
+                # Take next edus_per_chunk EDUs
+                window_edus = edus_with_ids[i:i + self.edus_per_chunk]
 
-        # With overlap: sliding window over sentences
-        chunks = []
-        i = 0
+                # Combine EDU texts
+                chunk_text = " ".join([edu_text for edu_text, _ in window_edus])
 
-        while i < len(sentence_ids):
-            window_size = 1 + self.overlap
-            window_sent_ids = sentence_ids[i:i + window_size]
+                # Collect all unique sentence IDs in this chunk
+                sentence_ids = sorted(set([sent_id for _, sent_id in window_edus]))
 
-            chunk_edus = []
-            for sent_id in window_sent_ids:
-                chunk_edus.extend(sentence_edus[sent_id])
+                chunks.append((chunk_text, sentence_ids))
 
-            chunk_text = " ".join(chunk_edus)
-            chunks.append((chunk_text, window_sent_ids))
+                # Move to next non-overlapping window
+                i += self.edus_per_chunk
+        else:
+            # With overlap: sliding window over EDUs
+            step_size = self.edus_per_chunk - self.overlap
+            if step_size <= 0:
+                step_size = 1  # Prevent infinite loop if overlap >= edus_per_chunk
 
-            i += 1
+            i = 0
+            while i < len(edus_with_ids):
+                # Take next edus_per_chunk EDUs
+                window_edus = edus_with_ids[i:i + self.edus_per_chunk]
+
+                if not window_edus:
+                    break
+
+                # Combine EDU texts
+                chunk_text = " ".join([edu_text for edu_text, _ in window_edus])
+
+                # Collect all unique sentence IDs in this chunk
+                sentence_ids = sorted(set([sent_id for _, sent_id in window_edus]))
+
+                chunks.append((chunk_text, sentence_ids))
+
+                # Move window by step_size EDUs
+                i += step_size
 
         return chunks
-
-    def merge_duplicate_chunks(
-        self,
-        chunks: List[Tuple[str, List[int]]]
-    ) -> List[Tuple[str, List[int]]]:
-        """Merge chunks that share more than 'overlap' sentences."""
-        if not chunks or self.overlap == 0:
-            return chunks
-
-        merged_chunks = []
-        i = 0
-
-        while i < len(chunks):
-            current_text, current_ids = chunks[i]
-
-            if i + 1 < len(chunks):
-                next_text, next_ids = chunks[i + 1]
-                overlap_count = len(set(current_ids) & set(next_ids))
-
-                if overlap_count > self.overlap:
-                    merged_ids = sorted(set(current_ids) | set(next_ids))
-                    merged_text = current_text + " " + next_text
-                    merged_chunks.append((merged_text, merged_ids))
-                    i += 2
-                    continue
-
-            merged_chunks.append((current_text, current_ids))
-            i += 1
-
-        return merged_chunks
 
     def chunk(
         self,
@@ -321,17 +312,14 @@ class CustomEDUChunker(BaseChunker):
         # Step 2: Create chunks with overlap
         chunks = self.create_chunks_with_overlap(edus_with_ids)
 
-        # Step 3: Merge chunks with excessive overlap
-        merged_chunks = self.merge_duplicate_chunks(chunks)
-
         # Step 4: Record chunk statistics
-        for chunk_text, sentence_ids in merged_chunks:
+        for chunk_text, sentence_ids in chunks:
             # Count EDUs in this chunk by checking which EDUs belong to these sentences
             edu_count = sum(1 for edu_text, sent_id in edus_with_ids
                           if sent_id in sentence_ids)
             self.stats.record_chunk(chunk_text, sentence_ids, edu_count=edu_count)
 
-        return merged_chunks
+        return chunks
 
     def get_metadata(
         self,
@@ -351,6 +339,7 @@ class CustomEDUChunker(BaseChunker):
             'chunk_size': len(chunk_text),
             'token_count': len(chunk_text.split()),
             'num_sentences': len(sentence_ids),
+            'edus_per_chunk': self.edus_per_chunk,
             'overlap': self.overlap,
             'model_path': str(self.model_path),
             'cleaned': bool(chunk_text.strip())
