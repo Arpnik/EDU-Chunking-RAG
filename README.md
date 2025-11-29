@@ -1,6 +1,9 @@
 # EDU-Chunking-RAG
 Enhancing RAG retrieval with discourse-segmented chunks instead of fixed-length tokens for factual verification
 
+![RAG-architecture-diagram](./images/RAG.jpg)
+
+
 ## 📋 Prerequisites
 - **Python 3.10+**
 - **Git**
@@ -144,6 +147,34 @@ DEV_FILE = "dataset/paper_dev.jsonl"
 # Option 2: Use reduced dataset
 WIKI_DIR = "dataset/reduced_fever_data/wiki"
 DEV_FILE = "dataset/reduced_fever_data/paper_dev.jsonl"
+```
+
+
+## 4.5 EDU Model Setup (Required for Custom EDU Chunking)
+### Overview
+The custom_edu chunker uses a trained neural model to segment text into Elementary Discourse Units (EDUs) - semantically meaningful chunks that preserve discourse structure. This typically provides better retrieval performance than fixed-length chunking strategies.
+### Training Your EDU Segmentation Model
+The EDU segmentation model must be trained separately using the DISRPT-Segmenter repository:
+
+📦 Repository: https://github.com/Arpnik/DISRPT-Segmenter
+
+After training, copy th ebest model path folder to the desired location as shown below:
+```
+EDU-Chunking-RAG/
+├── dataset/
+│   └── reduced_fever_data/
+├── edu_segmenter_linear/          # EDU model directory
+│   └── best_model/                # Trained model files
+│       ├── config.json
+│       ├── pytorch_model.bin
+│       ├── tokenizer_config.json
+│       ├── vocab.txt
+│       └── ... (other model files)
+├── com/
+│   └── fever/
+│       └── rag/
+│           └── retriever/
+└── requirements.txt
 ```
 
 ## 5. Run Retrieval Evaluator
