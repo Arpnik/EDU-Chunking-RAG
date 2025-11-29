@@ -1,0 +1,9 @@
+{
+  "model_type": "mlp_classifier",
+  "mlp_hidden_dims": [
+    512,
+    256,
+    128
+  ],
+  "mlp_dropout": 0.3
+}
