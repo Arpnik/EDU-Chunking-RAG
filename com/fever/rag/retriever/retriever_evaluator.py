@@ -369,7 +369,7 @@ def parse_args():
     #Chunker config
     parser.add_argument("--embedding_model_name", type=str, default="sentence-transformers/all-MiniLM-L6-v2",
                         help="embedding model name as in huggingface")
-    parser.add_argument("--chunking_overlap", type=int, default=0, help="overlap for chunking strategy (0,1,2,3...)")
+    parser.add_argument("--chunking_overlap", type=int, default=2, help="overlap for chunking strategy (0,1,2,3...)")
     parser.add_argument("--chunk_size", type=int, default=500, help="fixed character size to be included in chunk if fixed char chunker")
     parser.add_argument("--max_tokens", type=int, default=128, help="token size if fixed token chunker")
 

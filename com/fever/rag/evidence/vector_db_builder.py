@@ -89,16 +89,50 @@ class VectorDBBuilder:
         if not full_text:
             return []
 
+        # DEBUG: Check FEVER data format
+        annotated_lines = article.get('lines', '')
+        num_lines = annotated_lines.count('\n') + 1 if annotated_lines else 0
+
+        # Sample first article for debugging
+        if not hasattr(self, '_debug_printed'):
+            self._debug_printed = True
+            print(f"\n{'=' * 70}")
+            print(f"DEBUG: First FEVER Article")
+            print(f"{'=' * 70}")
+            print(f"Article ID: {article_id}")
+            print(f"Full text length: {len(full_text)}")
+            print(f"Number of lines in annotated_lines: {num_lines}")
+            print(f"\nFirst 3 lines of annotated_lines:")
+            for i, line in enumerate(annotated_lines.split('\n')[:3]):
+                print(f"  {i}: {line[:100]}")
+            print(f"{'=' * 70}\n")
+
         try:
-            chunks_with_ids = chunker.chunk(cleaned_text=full_text, annotated_lines=article.get('lines', ''),
-                                            tokenizer=embedding_model.tokenizer if hasattr(embedding_model, 'tokenizer') else None)
+            chunks_with_ids = chunker.chunk(
+                cleaned_text=full_text,
+                annotated_lines=annotated_lines,
+                tokenizer=embedding_model.tokenizer if hasattr(embedding_model, 'tokenizer') else None
+            )
+
+            # DEBUG: Check chunk results for first article
+            if not hasattr(self, '_chunk_debug_printed'):
+                self._chunk_debug_printed = True
+                print(f"\nDEBUG: First article chunking results:")
+                print(f"  Total chunks: {len(chunks_with_ids)}")
+                if chunks_with_ids:
+                    for i, (chunk_text, sent_ids) in enumerate(chunks_with_ids[:3]):
+                        print(f"  Chunk {i}: {len(sent_ids)} sentences, IDs={sent_ids}")
+                        print(f"    Text preview: {chunk_text[:100]}...")
         except Exception as e:
+            print(f"ERROR processing article {article_id}: {e}")
             return []
 
         results = [
             (chunk_text, chunker.get_metadata(article_id, i, chunk_text, sentence_ids=sentence_ids))
             for i, (chunk_text, sentence_ids) in enumerate(chunks_with_ids)
         ]
+
+        return results
 
         return results
 
