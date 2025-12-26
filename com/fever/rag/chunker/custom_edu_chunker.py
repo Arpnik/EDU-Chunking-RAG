@@ -27,8 +27,8 @@ class CustomEDUChunker(BaseChunker):
     def __init__(
         self,
         model_path: str,
-        edus_per_chunk: int = 5,
-        overlap: int = 2,
+        edus_per_chunk: int = 3,
+        overlap: int = 1,
         max_length: int = 512,
         window_stride: int = 256,
         aggregation_method: str = 'max',
@@ -517,13 +517,14 @@ class CustomEDUChunker(BaseChunker):
         return chunks
 
     def chunk(
-        self,
-        cleaned_text: str,
-        annotated_lines: str,
-        **kwargs
+            self,
+            cleaned_text: str,
+            annotated_lines: str,
+            **kwargs
     ) -> List[Tuple[str, List[int]]]:
         """
-        Chunk text into EDUs using the trained model with sliding window support.
+        Chunk text using sentences as the primary unit.
+        Only split abnormally long sentences using EDU boundaries.
         Records comprehensive statistics during processing.
 
         Returns:
@@ -535,18 +536,60 @@ class CustomEDUChunker(BaseChunker):
             return []
 
         self.stats.record_article()
-        lines_with_number = [(i, line) for i, line in enumerate(lines)]
-        edus_with_ids = self.process_lines_to_edus(lines_with_number)
 
-        # Get chunks with edu_count
-        chunks_with_counts = self.create_chunks_with_overlap(edus_with_ids)
+        # Token length threshold for "long" sentences
+        LONG_SENTENCE_THRESHOLD = 60  # tokens
 
-        # Record chunk statistics
-        for chunk_text, sentence_ids, edu_count in chunks_with_counts:
-            self.stats.record_chunk(chunk_text, sentence_ids, edu_count=edu_count)
+        chunks = []
 
-        # Return without edu_count for backward compatibility
-        return [(chunk_text, sentence_ids) for chunk_text, sentence_ids, _ in chunks_with_counts]
+        for sent_id, line_text in enumerate(lines):
+            if not line_text or not line_text.strip():
+                continue
+
+            # Skip single-character lines
+            if len(line_text.strip()) == 1:
+                continue
+
+            # Calculate token count (approximate)
+            token_count = len(line_text.split())
+
+            # For normal-length sentences, keep as-is
+            if token_count < LONG_SENTENCE_THRESHOLD:
+                chunks.append((line_text.strip(), [sent_id]))
+
+                # Record statistics
+                self.stats.record_sentence(line_text, edu_count=1)
+                self.stats.record_edu(line_text)
+                self.stats.record_chunk(line_text.strip(), [sent_id], edu_count=1)
+            else:
+                # For long sentences, use EDU segmentation
+                predictions = self.predict_edu_boundaries_for_line(line_text)
+
+                if not predictions:
+                    # If prediction fails, keep sentence intact
+                    chunks.append((line_text.strip(), [sent_id]))
+                    self.stats.record_sentence(line_text, edu_count=1)
+                    self.stats.record_edu(line_text)
+                    self.stats.record_chunk(line_text.strip(), [sent_id], edu_count=1)
+                    continue
+
+                # Split into EDUs
+                edus = self.split_line_into_edus(line_text, predictions)
+
+                # Count boundaries for this long sentence
+                safe_predictions = [int(p) if isinstance(p, torch.Tensor) else p for p in predictions]
+                self.boundary_count += sum(safe_predictions)
+
+                # Record sentence statistics
+                self.stats.record_sentence(line_text, edu_count=len(edus))
+
+                # Each EDU becomes a separate chunk (all with same sentence_id)
+                for edu in edus:
+                    chunks.append((edu, [sent_id]))
+                    self.stats.record_edu(edu)
+                    self.stats.record_chunk(edu, [sent_id], edu_count=1)
+
+        return chunks
 
     def get_metadata(
         self,
