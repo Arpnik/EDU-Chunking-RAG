@@ -31,6 +31,6 @@ CHUNKER_ARGS = {
     ChunkerType.FIXED_CHAR: ["chunk_size","chunking_overlap"],
     ChunkerType.FIXED_TOKEN: ["max_tokens","chunking_overlap"],
     ChunkerType.SENTENCE: [],
-    ChunkerType.CUSTOM_EDU: ["model_path", "chunking_overlap"],
+    ChunkerType.CUSTOM_EDU: ["model_path", "chunking_overlap", "long_sentence_threshold_for_custom_edu", "edus_per_chunk_for_custom_edu"]
 }
 
