@@ -388,6 +388,10 @@ def parse_args():
                         default=RetrievalStrategy.TOP_K)
     parser.add_argument("--top_k", type=int, default=5, help="k value for top-k retrieval")
     parser.add_argument("--threshold", type=float, default=0.5, help="Threshold for retrieval")
+    parser.add_argument("--long_sentence_threshold_for_custom_edu", type=int, default=60,
+                        help="Threshold for breaking the sentence into smaller segments using edu boundaries")
+    parser.add_argument("--edus_per_chunk_for_custom_edu", type=int, default=5,
+                        help="number of edu boundaries to be included in a chunk for custom edu chunker")
 
     return parser.parse_args()
 

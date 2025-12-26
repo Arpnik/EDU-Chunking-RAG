@@ -291,6 +291,10 @@ def parse_args():
                         help="Number of examples per class (0 for zero-shot)")
     parser.add_argument("--max_evidence_chunks", type=int, default=5)
     parser.add_argument("--max_claims", type=int, default=None)
+    parser.add_argument("--long_sentence_threshold_for_custom_edu", type=int, default=60,
+                        help="Threshold for breaking the sentence into smaller segments using edu boundaries")
+    parser.add_argument("--edus_per_chunk_for_custom_edu", type=int, default=5,
+                        help="number of edu boundaries to be included in a chunk for custom edu chunker")
 
     # Output
     parser.add_argument("--output_dir", type=str, default="results")

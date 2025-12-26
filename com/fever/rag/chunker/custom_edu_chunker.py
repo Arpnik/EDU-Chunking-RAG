@@ -32,6 +32,7 @@ class CustomEDUChunker(BaseChunker):
         max_length: int = 512,
         window_stride: int = 256,
         aggregation_method: str = 'max',
+        long_sentence_threshold: int = 60,
         **kwargs
     ):
         """
@@ -60,7 +61,7 @@ class CustomEDUChunker(BaseChunker):
         self.window_stride = window_stride
         self.aggregation_method = aggregation_method
         self.boundary_count = 0
-
+        self.long_sentence_threshold = long_sentence_threshold
         # Initialize statistics tracker
         self.stats = ChunkerStatistics('custom_edu_chunker')
 
@@ -538,7 +539,7 @@ class CustomEDUChunker(BaseChunker):
         self.stats.record_article()
 
         # Token length threshold for "long" sentences
-        LONG_SENTENCE_THRESHOLD = 60  # tokens
+        LONG_SENTENCE_THRESHOLD = self.long_sentence_threshold
 
         chunks = []
 

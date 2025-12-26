@@ -20,7 +20,10 @@ def get_chunker(chunker_type: ChunkerType, **kwargs):
     elif chunker_type == ChunkerType.SENTENCE:
         return SentenceChunker(**kwargs)
     elif chunker_type == ChunkerType.CUSTOM_EDU:
-        return CustomEDUChunker(overlap=kwargs["chunking_overlap"], **kwargs)
+        return CustomEDUChunker(overlap=kwargs["chunking_overlap"],
+                                long_sentence_threshold = kwargs["long_sentence_threshold_for_custom_edu"],
+                                edus_per_chunk=kwargs["edus_per_chunk_for_custom_edu"],
+                                **kwargs)
     else:
         raise ValueError(f"Unsupported chunker type: {chunker_type}")
 
