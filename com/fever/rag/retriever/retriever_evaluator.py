@@ -6,6 +6,7 @@ from typing import List, Dict, Optional, Set
 
 from qdrant_client import QdrantClient
 from tqdm import tqdm
+
 from com.fever.rag.chunker.base_chunker import BaseChunker
 from com.fever.rag.evidence.vector_db_builder import VectorDBBuilder
 from com.fever.rag.retriever.retriever_config import VectorDBRetriever
