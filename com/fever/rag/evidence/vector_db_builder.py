@@ -1,4 +1,4 @@
-from typing import Optional, List, Tuple, Dict
+from typing import Optional, List, Tuple, Dict, Iterator
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams, PointStruct, OptimizersConfigDiff
 from com.fever.rag.chunker.base_chunker import BaseChunker
@@ -9,6 +9,43 @@ from pathlib import Path
 import json
 from tqdm import tqdm
 import time
+from dataclasses import dataclass
+from enum import Enum
+
+
+class DatasetFormat(Enum):
+    """Supported dataset formats."""
+    FEVER = "fever"
+    SQUAD = "squad"
+
+
+@dataclass
+class DatasetConfig:
+    """Configuration for different dataset formats."""
+    format: DatasetFormat
+    id_field: str = "id"
+    text_field: str = "text"
+    lines_field: Optional[str] = "lines"
+
+    @staticmethod
+    def fever_config():
+        """Default FEVER configuration."""
+        return DatasetConfig(
+            format=DatasetFormat.FEVER,
+            id_field="id",
+            text_field="text",
+            lines_field="lines"
+        )
+
+    @staticmethod
+    def squad_config():
+        """Default SQuAD configuration."""
+        return DatasetConfig(
+            format=DatasetFormat.SQUAD,
+            id_field="title",  # Use article title as ID
+            text_field="context",
+            lines_field=None  # SQuAD doesn't have annotated lines
+        )
 
 
 class VectorDBBuilder:
@@ -21,18 +58,20 @@ class VectorDBBuilder:
             max_files: Optional[int] = None,
             encode_batch_size: int = 128,
             db_config: VectorDBConfig = None,
-            shared_client: Optional[QdrantClient] = None
+            shared_client: Optional[QdrantClient] = None,
+            dataset_config: Optional[DatasetConfig] = None
     ):
         """
         Initialize the Vector DB Builder with Qdrant.
 
         Args:
-            wiki_dir: Directory containing Wikipedia JSONL files
-            qdrant_host: Qdrant host
-            qdrant_port: Qdrant port (6333 for HTTP, 6334 for gRPC)
+            wiki_dir: Directory containing dataset files
             batch_size: Number of chunks to batch before inserting
             max_files: Limit number of files to process (None = all)
             encode_batch_size: Batch size for embedding generation
+            db_config: VectorDB configuration
+            shared_client: Shared Qdrant client
+            dataset_config: Dataset format configuration (defaults to FEVER)
         """
         self.wiki_dir = wiki_dir
         self.db_config = db_config
@@ -42,7 +81,8 @@ class VectorDBBuilder:
         self.embedding_models: List[str] = []
         self.chunkers: List[BaseChunker] = []
         self.device = get_device()
-        self.shared_client = shared_client  # Store it
+        self.shared_client = shared_client
+        self.dataset_config = dataset_config or DatasetConfig.fever_config()
 
         # Performance tracking
         self.timing_stats = {
@@ -76,6 +116,67 @@ class VectorDBBuilder:
 
         return f"{model_short}_{chunker.name}_chunks"
 
+    def _read_articles(self, file_path: Path) -> Iterator[Dict]:
+        """
+        Read articles from file based on dataset format.
+
+        Yields:
+            Dict with standardized fields: 'id', 'text', 'lines'
+        """
+        if self.dataset_config.format == DatasetFormat.FEVER:
+            # FEVER: JSONL format, one article per line
+            with open(file_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    try:
+                        article = json.loads(line.strip())
+                        yield {
+                            'id': article.get(self.dataset_config.id_field),
+                            'text': article.get(self.dataset_config.text_field, ''),
+                            'lines': article.get(self.dataset_config.lines_field, '')
+                        }
+                    except json.JSONDecodeError:
+                        continue
+
+        elif self.dataset_config.format == DatasetFormat.SQUAD:
+            # SQuAD: Nested JSON format
+            with open(file_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+
+            # Navigate through SQuAD structure
+            for article in data.get('data', []):
+                title = article.get('title', 'unknown')
+
+                for para_idx, paragraph in enumerate(article.get('paragraphs', [])):
+                    context = paragraph.get('context', '')
+
+                    # Create unique ID for each paragraph
+                    article_id = f"{title}_para_{para_idx}"
+
+                    yield {
+                        'id': article_id,
+                        'text': context,
+                        'lines': None  # SQuAD doesn't have annotated lines
+                    }
+
+    def _count_articles_in_file(self, file_path: Path) -> int:
+        """Count number of articles in a file based on dataset format."""
+        if self.dataset_config.format == DatasetFormat.FEVER:
+            # Count lines in JSONL
+            with open(file_path, 'r', encoding='utf-8') as f:
+                return sum(1 for _ in f)
+
+        elif self.dataset_config.format == DatasetFormat.SQUAD:
+            # Count total paragraphs across all articles in nested JSON
+            try:
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                count = 0
+                for article in data.get('data', []):
+                    count += len(article.get('paragraphs', []))
+                return count
+            except:
+                return 0
+
     def _process_article(
             self,
             article: Dict,
@@ -89,23 +190,7 @@ class VectorDBBuilder:
         if not full_text:
             return []
 
-        # DEBUG: Check FEVER data format
         annotated_lines = article.get('lines', '')
-        num_lines = annotated_lines.count('\n') + 1 if annotated_lines else 0
-
-        # Sample first article for debugging
-        if not hasattr(self, '_debug_printed'):
-            self._debug_printed = True
-            print(f"\n{'=' * 70}")
-            print(f"DEBUG: First FEVER Article")
-            print(f"{'=' * 70}")
-            print(f"Article ID: {article_id}")
-            print(f"Full text length: {len(full_text)}")
-            print(f"Number of lines in annotated_lines: {num_lines}")
-            print(f"\nFirst 3 lines of annotated_lines:")
-            for i, line in enumerate(annotated_lines.split('\n')[:3]):
-                print(f"  {i}: {line[:100]}")
-            print(f"{'=' * 70}\n")
 
         try:
             chunks_with_ids = chunker.chunk(
@@ -113,26 +198,32 @@ class VectorDBBuilder:
                 annotated_lines=annotated_lines,
                 tokenizer=embedding_model.tokenizer if hasattr(embedding_model, 'tokenizer') else None
             )
-
-            # DEBUG: Check chunk results for first article
-            if not hasattr(self, '_chunk_debug_printed'):
-                self._chunk_debug_printed = True
-                print(f"\nDEBUG: First article chunking results:")
-                print(f"  Total chunks: {len(chunks_with_ids)}")
-                if chunks_with_ids:
-                    for i, (chunk_text, sent_ids) in enumerate(chunks_with_ids[:3]):
-                        print(f"  Chunk {i}: {len(sent_ids)} sentences, IDs={sent_ids}")
-                        print(f"    Text preview: {chunk_text[:100]}...")
         except Exception as e:
             print(f"ERROR processing article {article_id}: {e}")
             return []
 
-        results = [
-            (chunk_text, chunker.get_metadata(article_id, i, chunk_text, sentence_ids=sentence_ids))
-            for i, (chunk_text, sentence_ids) in enumerate(chunks_with_ids)
-        ]
+        results = []
+        current_pos = 0  # Track character position for SQuAD
 
-        return results
+        for i, (chunk_text, sentence_ids) in enumerate(chunks_with_ids):
+            # Calculate character positions (for SQuAD)
+            start_char = full_text.find(chunk_text, current_pos)
+            if start_char == -1:
+                start_char = current_pos  # Fallback if exact match not found
+            end_char = start_char + len(chunk_text)
+            current_pos = end_char
+
+            # Generate metadata with position info
+            metadata = chunker.get_metadata(
+                article_id,
+                i,
+                chunk_text,
+                sentence_ids=sentence_ids,
+                start_char=start_char,
+                end_char=end_char
+            )
+
+            results.append((chunk_text, metadata))
 
         return results
 
@@ -176,7 +267,8 @@ class VectorDBBuilder:
                     **metadata,
                     "text": texts[i],  # Store the actual text in payload
                     "embedding_model": embedding_model_name,  # Store model info
-                    "chunking_method": chunker_name  # Store chunker info
+                    "chunking_method": chunker_name,  # Store chunker info
+                    "dataset_format": self.dataset_config.format.value  # Store dataset format
                 }
             )
             points.append(point)
@@ -207,11 +299,6 @@ class VectorDBBuilder:
 
         return start_id + batch_size
 
-    def _count_lines_in_file(self, file_path: Path) -> int:
-        """Count number of lines in a file efficiently."""
-        with open(file_path, 'r', encoding='utf-8') as f:
-            return sum(1 for _ in f)
-
     def _process_files_for_config(
             self,
             embedding_model: SentenceTransformer,
@@ -219,9 +306,9 @@ class VectorDBBuilder:
             chunker: BaseChunker,
             client: QdrantClient,
             collection_name: str,
-            wiki_files: List[Path]
+            data_files: List[Path]
     ):
-        """Process Wikipedia files for one embedding model + chunker combination."""
+        """Process data files for one embedding model + chunker combination."""
         batch = []
         total_articles = 0
         total_chunks = 0
@@ -240,35 +327,37 @@ class VectorDBBuilder:
 
         t_start_all = time.time()
 
-        for file_path in tqdm(wiki_files, desc="    Files", position=0, leave=True):
-            num_lines = self._count_lines_in_file(file_path)
+        for file_path in tqdm(data_files, desc="    Files", position=0, leave=True):
+            num_articles = self._count_articles_in_file(file_path)
 
-            with open(file_path, 'r', encoding='utf-8') as f:
-                for line in tqdm(f, total=num_lines, desc=f"      {file_path.name}", position=1, leave=False):
-                    try:
-                        t_proc = time.time()
-                        article = json.loads(line.strip())
-                        total_articles += 1
+            for article in tqdm(
+                    self._read_articles(file_path),
+                    total=num_articles,
+                    desc=f"      {file_path.name}",
+                    position=1,
+                    leave=False
+            ):
+                try:
+                    t_proc = time.time()
+                    total_articles += 1
 
-                        chunks = self._process_article(article, chunker, embedding_model)
-                        cleaning_issues += sum(1 for _, meta in chunks if not meta.get('cleaned', True))
+                    chunks = self._process_article(article, chunker, embedding_model)
+                    cleaning_issues += sum(1 for _, meta in chunks if not meta.get('cleaned', True))
 
-                        batch.extend(chunks)
-                        total_chunks += len(chunks)
+                    batch.extend(chunks)
+                    total_chunks += len(chunks)
 
-                        self.timing_stats['process_time'] += time.time() - t_proc
+                    self.timing_stats['process_time'] += time.time() - t_proc
 
-                        if len(batch) >= self.batch_size:
-                            current_id = self._batch_insert(
-                                client, collection_name, batch, embedding_model, current_id,
-                                embedding_model_name, chunker.name
-                            )
-                            batch = []
+                    if len(batch) >= self.batch_size:
+                        current_id = self._batch_insert(
+                            client, collection_name, batch, embedding_model, current_id,
+                            embedding_model_name, chunker.name
+                        )
+                        batch = []
 
-                    except json.JSONDecodeError:
-                        continue
-                    except Exception as e:
-                        continue
+                except Exception as e:
+                    continue
 
         # Insert remaining
         if batch:
@@ -333,7 +422,8 @@ class VectorDBBuilder:
         print("QDRANT VECTOR DATABASE BUILDER")
         print("=" * 70)
         print(f"\nConfiguration:")
-        print(f"  Wiki directory: {self.wiki_dir}")
+        print(f"  Data directory: {self.wiki_dir}")
+        print(f"  Dataset format: {self.dataset_config.format.value}")
         print(f"  Qdrant: {self.db_config.host}:{self.db_config.port}")
         print(f"  Protocol: {'gRPC' if self.db_config.use_grpc else 'HTTP'}")
         print(f"  Embedding models: {self.embedding_models}")
@@ -345,15 +435,19 @@ class VectorDBBuilder:
         print(f"  Device: {self.device}")
 
         try:
-            wiki_path = Path(self.wiki_dir)
-            if not wiki_path.exists() or not wiki_path.is_dir():
-                raise ValueError(f"Wiki directory does not exist: {self.wiki_dir}")
-            wiki_files = sorted(wiki_path.glob("*.jsonl"))
+            data_path = Path(self.wiki_dir)
+            if not data_path.exists() or not data_path.is_dir():
+                raise ValueError(f"Data directory does not exist: {self.wiki_dir}")
+
+            # Get appropriate file extension
+            file_pattern = "*.jsonl" if self.dataset_config.format == DatasetFormat.FEVER else "*.json"
+            data_files = sorted(data_path.glob(file_pattern))
+
             if self.max_files:
-                wiki_files = wiki_files[:self.max_files]
-            print(f"\nWill process {len(wiki_files)} wiki files")
+                data_files = data_files[:self.max_files]
+            print(f"\nWill process {len(data_files)} files")
         except Exception as e:
-            raise ValueError(f"Error accessing wiki directory: {e}")
+            raise ValueError(f"Error accessing data directory: {e}")
 
         for embedding_model_name in self.embedding_models:
             print("\n" + "=" * 70)
@@ -367,7 +461,6 @@ class VectorDBBuilder:
             print(f"  Connecting to Qdrant...")
             if self.shared_client is not None:
                 client = self.shared_client
-                # print("Using shared Qdrant client")
             else:
                 client = self.db_config.connect_to_qdrant()
 
@@ -384,7 +477,6 @@ class VectorDBBuilder:
                         pass
 
                 # Create collection with optimized settings
-                # Note: Collection metadata stored in payload schema, not collection level
                 client.create_collection(
                     collection_name=collection_name,
                     vectors_config=VectorParams(
@@ -392,12 +484,13 @@ class VectorDBBuilder:
                         distance=Distance.COSINE
                     ),
                     optimizers_config=OptimizersConfigDiff(
-                        indexing_threshold=20000,  # Start indexing after 20k points
-                        memmap_threshold=50000  # Use memory-mapped storage for large collections
+                        indexing_threshold=20000,
+                        memmap_threshold=50000
                     )
                 )
 
-                print(f"    Collection metadata: model={embedding_model_name}, chunker={chunker.name}")
+                print(
+                    f"    Collection metadata: model={embedding_model_name}, chunker={chunker.name}, dataset={self.dataset_config.format.value}")
 
                 total_articles, total_chunks, cleaning_issues = self._process_files_for_config(
                     embedding_model,
@@ -405,7 +498,7 @@ class VectorDBBuilder:
                     chunker,
                     client,
                     collection_name,
-                    wiki_files
+                    data_files
                 )
 
                 # Get final count

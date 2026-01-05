@@ -1,8 +1,9 @@
 """
 EDU-based chunker with sliding window support for long sentences.
+Supports both FEVER and SQuAD datasets.
 """
 
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional
 from pathlib import Path
 import torch
 import transformers
@@ -17,6 +18,7 @@ from com.fever.rag.utils.data_helper import get_device
 class CustomEDUChunker(BaseChunker):
     """
     EDU-based chunker with sliding window support for long sentences.
+    Supports both FEVER and SQuAD datasets.
 
     Key improvements:
     - Handles sentences longer than 512 tokens using sliding windows
@@ -27,11 +29,13 @@ class CustomEDUChunker(BaseChunker):
     def __init__(
         self,
         model_path: str,
-        edus_per_chunk: int = 5,
-        overlap: int = 2,
+        edus_per_chunk: int = 7,
+        overlap: int = 3,
         max_length: int = 512,
         window_stride: int = 256,
-        aggregation_method: str = 'max',
+        aggregation_method: str = 'avg',
+        dataset_type: str = "squad",
+        long_sentence_threshold: int = 60,
         **kwargs
     ):
         """
@@ -44,12 +48,16 @@ class CustomEDUChunker(BaseChunker):
             max_length: Maximum sequence length for BERT (default: 512)
             window_stride: Stride for sliding window (default: 256)
             aggregation_method: How to combine predictions ('max', 'avg', 'vote')
+            dataset_type: Either "fever" or "squad"
+                - "fever": Uses annotated_lines with sentence IDs
+                - "squad": Uses simple sentence splitting on cleaned_text
         """
         print("overlap:", overlap)
         print("edus_per_chunk:", edus_per_chunk)
         print("model_path:", model_path)
         print(f"max_length: {max_length}, window_stride: {window_stride}")
         print(f"aggregation_method: {aggregation_method}")
+        print(f"dataset_type: {dataset_type}")
 
         super().__init__('edu_linear_head', model_path=model_path)
         self.model_path = Path(model_path)
@@ -60,6 +68,11 @@ class CustomEDUChunker(BaseChunker):
         self.window_stride = window_stride
         self.aggregation_method = aggregation_method
         self.boundary_count = 0
+        self.long_sentence_threshold = long_sentence_threshold
+        self.dataset_type = dataset_type.lower()
+
+        if self.dataset_type not in ["fever", "squad"]:
+            raise ValueError(f"dataset_type must be 'fever' or 'squad', got '{dataset_type}'")
 
         # Initialize statistics tracker
         self.stats = ChunkerStatistics('custom_edu_chunker')
@@ -78,6 +91,7 @@ class CustomEDUChunker(BaseChunker):
 
         print(f"Loading EDU model from: {self.model_path}")
         print(f"Detected model type: {model_type}")
+        print(f"Long sentence threshold: {self.long_sentence_threshold} tokens")
 
         transformers.logging.set_verbosity_error()
         base_model_name = "bert-base-uncased"
@@ -91,22 +105,18 @@ class CustomEDUChunker(BaseChunker):
             mlp_dropout = self.model_config.get("mlp_dropout", 0.3)
 
             # Determine base model name
-            # Priority: chunker_config.json > adapter_config.json > default
-            base_model_name = "bert-base-uncased"  # Default fallback
+            base_model_name = "bert-base-uncased"
 
-            # Check chunker_config.json first
             if "base_model_name" in self.model_config and self.model_config["base_model_name"]:
                 base_model_name = self.model_config["base_model_name"]
                 print(f"✓ Using base model from chunker_config.json: {base_model_name}")
             else:
-                # Try adapter_config.json
                 peft_config_path = self.model_path / "adapter_config.json"
                 if peft_config_path.exists():
                     with open(peft_config_path, 'r') as f:
                         peft_config = json.load(f)
                     candidate = peft_config.get("base_model_name_or_path")
 
-                    # Validate: not None/null and not empty string
                     if candidate and str(candidate).strip():
                         base_model_name = candidate
                         print(f"✓ Using base model from adapter_config.json: {base_model_name}")
@@ -149,6 +159,21 @@ class CustomEDUChunker(BaseChunker):
             padding=True
         )
 
+    def _split_into_sentences(self, text: str) -> List[str]:
+        """
+        Simple sentence splitting for SQuAD (no sentence IDs available).
+
+        Args:
+            text: Raw text to split
+
+        Returns:
+            List of sentences
+        """
+        import re
+        # Split on . ! ? followed by space and capital letter
+        sentences = re.split(r'(?<=[.!?])\s+(?=[A-Z])', text)
+        return [s.strip() for s in sentences if s.strip()]
+
     def predict_edu_boundaries_for_line(self, line_text: str) -> List[int]:
         """
         Predict EDU boundaries using sliding window for long sentences.
@@ -181,7 +206,7 @@ class CustomEDUChunker(BaseChunker):
         seq_length = len(input_ids)
 
         # If short enough, process normally
-        if seq_length <= self.max_length - 2:  # Account for [CLS] and [SEP]
+        if seq_length <= self.max_length - 2:
             return self._predict_single_window(line_text)
 
         # Use sliding window for long sequences
@@ -234,7 +259,7 @@ class CustomEDUChunker(BaseChunker):
                     attention_mask=attention_mask
                 )
                 logits = outputs.logits
-                predictions = torch.argmax(logits, dim=2).squeeze(0)  # Only remove batch dim!
+                predictions = torch.argmax(logits, dim=2).squeeze(0)
 
             # Handle different prediction dimensions
             if predictions.dim() == 0:
@@ -526,39 +551,79 @@ class CustomEDUChunker(BaseChunker):
         Chunk text into EDUs using the trained model with sliding window support.
         Records comprehensive statistics during processing.
 
+        Args:
+            cleaned_text: Cleaned text (used for SQuAD)
+            annotated_lines: Annotated lines with sentence IDs (used for FEVER)
+
         Returns:
             List of (chunk_text, sentence_ids) tuples
         """
-        lines = self.parse_annotated_lines(annotated_lines)
+        self.stats.record_article()
+
+        if self.dataset_type == "fever":
+            # FEVER: Use annotated lines with sentence IDs
+            lines = self.parse_annotated_lines(annotated_lines)
+        else:
+            # SQuAD: Simple sentence splitting
+            lines = self._split_into_sentences(cleaned_text)
 
         if not lines:
             return []
 
-        self.stats.record_article()
-        lines_with_number = [(i, line) for i, line in enumerate(lines)]
-        edus_with_ids = self.process_lines_to_edus(lines_with_number)
+        chunks = []
+        long_sentences_with_numbers = []
+        for sent_id, line_text in enumerate(lines):
+            if not line_text or not line_text.strip():
+                continue
 
-        # Get chunks with edu_count
-        chunks_with_counts = self.create_chunks_with_overlap(edus_with_ids)
+            # Skip single-character lines
+            if len(line_text.strip()) == 1:
+                continue
 
-        # Record chunk statistics
-        for chunk_text, sentence_ids, edu_count in chunks_with_counts:
-            self.stats.record_chunk(chunk_text, sentence_ids, edu_count=edu_count)
+            # Calculate token count (approximate)
+            token_count = len(line_text.split())
 
-        # Return without edu_count for backward compatibility
-        return [(chunk_text, sentence_ids) for chunk_text, sentence_ids, _ in chunks_with_counts]
+            # For normal-length sentences, keep as-is
+            if token_count < self.long_sentence_threshold:
+                chunks.append((line_text.strip(), [sent_id]))
+                self.stats.record_chunk(line_text.strip(), [sent_id], edu_count=1)
+            else:
+                long_sentences_with_numbers.append((sent_id, line_text))
+
+            edus_with_ids = self.process_lines_to_edus(long_sentences_with_numbers)
+
+            chunks_with_counts = self.create_chunks_with_overlap(edus_with_ids)
+
+            for chunk_text, sentence_ids, edu_count in chunks_with_counts:
+                self.stats.record_chunk(chunk_text, sentence_ids, edu_count=edu_count)
+
+            chunks.extend([(chunk_text, sentence_ids) for chunk_text, sentence_ids, _ in chunks_with_counts])
+
+        return chunks
 
     def get_metadata(
         self,
         article_id: str,
         chunk_index: int,
         chunk_text: str,
-        sentence_ids: List[int] = None
+        sentence_ids: List[int] = None,
+        start_char: Optional[int] = None,
+        end_char: Optional[int] = None
     ) -> Dict:
-        """Generate metadata for an EDU chunk."""
+        """
+        Generate metadata for an EDU chunk.
+
+        Args:
+            article_id: Article/context ID
+            chunk_index: Index of this chunk
+            chunk_text: The chunk text
+            sentence_ids: List of sentence IDs (FEVER) or indices (SQuAD)
+            start_char: Starting character position in original text (SQuAD only)
+            end_char: Ending character position in original text (SQuAD only)
+        """
         sentence_ids = sentence_ids or []
 
-        return {
+        metadata = {
             'article_id': article_id,
             'chunk_index': chunk_index,
             'sentence_ids': sentence_ids,
@@ -572,5 +637,13 @@ class CustomEDUChunker(BaseChunker):
             'window_stride': self.window_stride,
             'aggregation_method': self.aggregation_method,
             'model_path': str(self.model_path),
-            'cleaned': bool(chunk_text.strip())
+            'cleaned': bool(chunk_text.strip()),
+            'dataset_type': self.dataset_type
         }
+
+        # Add character positions for SQuAD (needed for Recall@K calculation)
+        if self.dataset_type == "squad" and start_char is not None:
+            metadata['start_char'] = start_char
+            metadata['end_char'] = end_char if end_char is not None else start_char + len(chunk_text)
+
+        return metadata
