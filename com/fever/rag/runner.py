@@ -1,6 +1,7 @@
 """
 Integrated RAG Pipeline Runner
 Combines retrieval evaluation with zero-shot/few-shot classification.
+Supports both FEVER and SQuAD datasets.
 """
 import argparse
 from pathlib import Path
@@ -23,7 +24,9 @@ class IntegratedRAGPipeline:
     Integrated pipeline that:
     1. Builds vector DB with specified chunking strategy
     2. Evaluates retrieval performance
-    3. Runs zero-shot/few-shot classification using the same retrieval config
+    3. Runs zero-shot/few-shot generation using the same retrieval config
+
+    Supports both FEVER (classification) and SQuAD (answer generation).
     """
 
     def __init__(
@@ -43,7 +46,7 @@ class IntegratedRAGPipeline:
             # Retrieval config
             retrieval_config: RetrievalConfig = None,
 
-            # Classification config
+            # Classification/Generation config
             llm_model_name: str = "gemma2:2b",
             temperature: float = 0.0,
             few_shot_examples: int = 0,
@@ -56,6 +59,9 @@ class IntegratedRAGPipeline:
             # Output
             output_dir: str = "results",
             overlap: Optional[int] = None,
+
+            # Dataset type
+            dataset_type: str = "fever",
     ):
         """
         Initialize the integrated RAG pipeline.
@@ -64,19 +70,19 @@ class IntegratedRAGPipeline:
             db_config: Vector database configuration
             chunker: Chunking strategy
             embedding_model_name: Embedding model for retrieval
-            wiki_dir: Directory containing Wikipedia JSONL files
-            claim_file_path: Path to FEVER claims file
+            wiki_dir: Directory containing evidence files (JSONL for FEVER, JSON for SQuAD)
+            claim_file_path: Path to queries file (JSONL for FEVER, JSON for SQuAD)
             examples_file: Path to training examples for few-shot
             retrieval_config: Retrieval configuration
-            llm_model_name: LLM for classification
+            llm_model_name: LLM for generation
             temperature: Sampling temperature
-            few_shot_examples: Number of examples per class
-            use_cot: Enable chain-of-thought reasoning
+            few_shot_examples: Number of examples per class (FEVER) or total (SQuAD)
             max_evidence_chunks: Max evidence chunks to include
             k_values: K values for retrieval evaluation
-            max_claims: Maximum claims to evaluate
+            max_claims: Maximum queries to evaluate
             output_dir: Directory for output files
             overlap: Overlap for chunking
+            dataset_type: Either "fever" or "squad"
         """
         self.db_config = db_config
         self.chunker = chunker
@@ -92,6 +98,11 @@ class IntegratedRAGPipeline:
         self.max_claims = max_claims
         self.output_dir = Path(output_dir)
         self.overlap = overlap
+        self.dataset_type = dataset_type.lower()
+
+        if self.dataset_type not in ["fever", "squad"]:
+            raise ValueError(f"dataset_type must be 'fever' or 'squad', got '{dataset_type}'")
+
         # Set default retrieval config
         self.retrieval_config = retrieval_config or RetrievalConfig(
             strategy=RetrievalStrategy.TOP_K,
@@ -112,7 +123,7 @@ class IntegratedRAGPipeline:
     def build_vector_db(self):
         """Step 1: Build the vector database."""
         print("\n" + "=" * 80)
-        print("STEP 1: BUILDING VECTOR DATABASE")
+        print(f"STEP 1: BUILDING VECTOR DATABASE ({self.dataset_type.upper()})")
         print("=" * 80)
 
         self.retriever_evaluator = RetrieverEvaluator(
@@ -121,10 +132,11 @@ class IntegratedRAGPipeline:
             chunker=self.chunker,
             db_config=self.db_config,
             wiki_dir=self.wiki_dir,
-            output_file=str(self.output_dir / "retrieval_evaluation.jsonl"),
+            output_file=str(self.output_dir / f"retrieval_evaluation_{self.dataset_type}.jsonl"),
             k_values=self.k_values,
             overlap=self.overlap,
-            shared_client=self.shared_client
+            shared_client=self.shared_client,
+            dataset_type=self.dataset_type,
         )
 
         self.collection_name = self.retriever_evaluator.collection_name
@@ -138,11 +150,11 @@ class IntegratedRAGPipeline:
     def evaluate_retrieval(self):
         """Step 2: Evaluate retrieval performance."""
         print("\n" + "=" * 80)
-        print("STEP 2: EVALUATING RETRIEVAL PERFORMANCE")
+        print(f"STEP 2: EVALUATING RETRIEVAL PERFORMANCE ({self.dataset_type.upper()})")
         print("=" * 80)
 
         if self.retriever_evaluator is None:
-            raise RuntimeError("Must run step1_build_vector_db first")
+            raise RuntimeError("Must run build_vector_db first")
 
         # Evaluate retrieval
         retrieval_metrics = self.retriever_evaluator.evaluate(self.retrieval_config)
@@ -156,22 +168,23 @@ class IntegratedRAGPipeline:
         print("✓ Retrieval evaluation completed")
         return retrieval_metrics
 
-    def classify_with_rag(self):
-        """Step 3: Run classification with RAG using the same retrieval config."""
+    def run_generation(self):
+        """Step 3: Run generation (classification for FEVER, answer generation for SQuAD)."""
+        task_name = "CLASSIFICATION" if self.dataset_type == "fever" else "ANSWER GENERATION"
         print("\n" + "=" * 80)
-        print("STEP 3: CLASSIFICATION WITH RAG")
+        print(f"STEP 3: {task_name} WITH RAG ({self.dataset_type.upper()})")
         print("=" * 80)
 
         if self.collection_name is None:
-            raise RuntimeError("Must run step1_build_vector_db first")
+            raise RuntimeError("Must run build_vector_db first")
 
-        # Initialize retriever for classification
+        # Initialize retriever for generation
         retriever = VectorDBRetriever(
             db_config=self.db_config,
             shared_client=self.shared_client
         )
 
-        # Initialize classifier
+        # Initialize classifier/generator
         self.classifier = FEVERClassifier(
             model_name=self.llm_model_name,
             few_shot_examples=self.few_shot_examples,
@@ -182,31 +195,33 @@ class IntegratedRAGPipeline:
             collection_name=self.collection_name,
             embedding_model_name=self.embedding_model_name,
             max_evidence_chunks=self.max_evidence_chunks,
+            dataset_type=self.dataset_type,
         )
 
         # Run evaluation
-        classification_mode = "few-shot" if self.few_shot_examples > 0 else "zero-shot"
-        output_file = self.output_dir / f"{classification_mode}_classification.json"
+        generation_mode = "few-shot" if self.few_shot_examples > 0 else "zero-shot"
+        output_file = self.output_dir / f"{generation_mode}_{self.dataset_type}_results.json"
 
-        classification_metrics = self.classifier.evaluate(
-            jsonl_path=self.claim_file_path,
+        generation_metrics = self.classifier.evaluate(
+            file_path=self.claim_file_path,
             max_claims=self.max_claims,
             output_file=str(output_file)
         )
 
-        print("✓ Classification completed")
-        return classification_metrics
+        print(f"✓ {task_name.capitalize()} completed")
+        return generation_metrics
 
     def run_full_pipeline(self):
-        """Run the complete pipeline: build DB -> evaluate retrieval -> classify."""
+        """Run the complete pipeline: build DB -> evaluate retrieval -> generate."""
         print("\n" + "=" * 80)
-        print("INTEGRATED RAG PIPELINE")
+        print(f"INTEGRATED RAG PIPELINE ({self.dataset_type.upper()})")
         print("=" * 80)
+        print(f"Dataset: {self.dataset_type.upper()}")
         print(f"Embedding Model: {self.embedding_model_name}")
         print(f"Chunker: {self.chunker.name}")
         print(f"LLM: {self.llm_model_name}")
         print(f"Retrieval Strategy: {self.retrieval_config.strategy.value}")
-        print(f"Classification Mode: {'Few-shot' if self.few_shot_examples > 0 else 'Zero-shot'}")
+        print(f"Generation Mode: {'Few-shot' if self.few_shot_examples > 0 else 'Zero-shot'}")
         print("=" * 80)
 
         # Step 1: Build vector DB
@@ -215,18 +230,18 @@ class IntegratedRAGPipeline:
         # Step 2: Evaluate retrieval
         retrieval_metrics = self.evaluate_retrieval()
 
-        # Step 3: Run classification
-        classification_metrics = self.classify_with_rag()
+        # Step 3: Run generation
+        generation_metrics = self.run_generation()
 
         # Print final summary
-        self._print_final_summary(retrieval_metrics, classification_metrics)
+        self._print_final_summary(retrieval_metrics, generation_metrics)
 
         return {
             'retrieval_metrics': retrieval_metrics,
-            'classification_metrics': classification_metrics
+            'generation_metrics': generation_metrics
         }
 
-    def _print_final_summary(self, retrieval_metrics, classification_metrics):
+    def _print_final_summary(self, retrieval_metrics, generation_metrics):
         """Print final summary of the pipeline."""
         print("\n" + "=" * 80)
         print("PIPELINE SUMMARY")
@@ -237,11 +252,20 @@ class IntegratedRAGPipeline:
         print(f"  Recall@5: {retrieval_metrics.recall_at_k.get(5, 0):.4f}")
         print(f"  Precision@5: {retrieval_metrics.precision_at_k.get(5, 0):.4f}")
 
-        print("\n🎯 Classification Performance:")
-        print(f"  Accuracy: {classification_metrics.accuracy:.4f}")
-        print(f"  F1 Score: {classification_metrics.f1:.4f}")
-        print(f"  Precision: {classification_metrics.precision:.4f}")
-        print(f"  Recall: {classification_metrics.recall:.4f}")
+        if self.dataset_type == "fever":
+            # FEVER: Classification metrics
+            print("\n🎯 Classification Performance:")
+            print(f"  Accuracy: {generation_metrics.accuracy:.4f}")
+            print(f"  F1 Score: {generation_metrics.f1:.4f}")
+            print(f"  Precision: {generation_metrics.precision:.4f}")
+            print(f"  Recall: {generation_metrics.recall:.4f}")
+        else:
+            # SQuAD: Answer generation metrics
+            print("\n🎯 Answer Generation Performance:")
+            print(f"  Exact Match: {generation_metrics.get('exact_match', 0):.4f}")
+            print(f"  F1 Score: {generation_metrics.get('f1', 0):.4f}")
+            print(f"  ROUGE-L: {generation_metrics.get('rouge_l', 0):.4f}")
+            print(f"  BERTScore: {generation_metrics.get('bert_score', 0):.4f}")
 
         print("\n📁 Results saved to:")
         print(f"  {self.output_dir.absolute()}")
@@ -250,8 +274,13 @@ class IntegratedRAGPipeline:
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Integrated RAG Pipeline: Retrieval Evaluation + Classification"
+        description="Integrated RAG Pipeline: Retrieval Evaluation + Generation (FEVER/SQuAD)"
     )
+
+    # Dataset selection
+    parser.add_argument("--dataset_type", type=str, default="fever",
+                        choices=["fever", "squad"],
+                        help="Dataset type: 'fever' or 'squad'")
 
     # Database config
     parser.add_argument("--qdrant_host", type=str, default="localhost")
@@ -266,16 +295,28 @@ def parse_args():
     parser.add_argument("--max_tokens", type=int, default=128)
     parser.add_argument("--chunker_type", type=lambda s: ChunkerType(s),
                         choices=list(ChunkerType), default=ChunkerType.SENTENCE)
+    parser.add_argument("--long_sentence_threshold_for_custom_edu", type=int, default=50)
 
-    # Data paths
+    # Data paths - FEVER defaults
     parser.add_argument("--wiki_dir", type=str,
-                        default="../../../../dataset/reduced_fever_data/wiki")
+                        default="../../../../dataset/reduced_fever_data/wiki",
+                        help="Evidence directory (FEVER: wiki JSONL, SQuAD: train JSON)")
     parser.add_argument("--claim_file_path", type=str,
-                        default="../../../../dataset/reduced_fever_data/paper_dev.jsonl")
+                        default="../../../../dataset/reduced_fever_data/paper_dev.jsonl",
+                        help="Query file (FEVER: claims JSONL, SQuAD: questions JSON)")
     parser.add_argument("--examples_file", type=str,
-                        default="../../../../dataset/reduced_fever_data/train.jsonl")
+                        default="../../../../dataset/reduced_fever_data/train.jsonl",
+                        help="Few-shot examples file")
     parser.add_argument("--model_path", type=str,
                         default="../../../../edu_segmenter_linear/best_model")
+
+    # SQuAD-specific paths (override defaults when --dataset_type=squad)
+    parser.add_argument("--squad_evidence", type=str,
+                        default="../../../../dataset/squad/train-v2.0.json",
+                        help="SQuAD evidence file (train-v2.0.json)")
+    parser.add_argument("--squad_questions", type=str,
+                        default="../../../../dataset/squad/dev-v2.0.json",
+                        help="SQuAD questions file (dev-v2.0.json)")
 
     # Retrieval config
     parser.add_argument("--retrieval_strategy", type=lambda s: RetrievalStrategy(s),
@@ -284,11 +325,11 @@ def parse_args():
     parser.add_argument("--threshold", type=float, default=0.5)
     parser.add_argument("--k_retrieval", type=int, nargs="+", default=[1, 3, 5, 10, 20])
 
-    # Classification config
+    # Generation config
     parser.add_argument("--llm_name", type=str, default="gemma2:2b")
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--few_shot_examples", type=int, default=0,
-                        help="Number of examples per class (0 for zero-shot)")
+                        help="Number of examples per class (FEVER) or total (SQuAD)")
     parser.add_argument("--max_evidence_chunks", type=int, default=5)
     parser.add_argument("--max_claims", type=int, default=None)
 
@@ -301,6 +342,17 @@ def parse_args():
 if __name__ == "__main__":
     args = parse_args()
 
+    # Override paths if using SQuAD
+    if args.dataset_type == "squad":
+        args.wiki_dir = args.squad_evidence
+        args.claim_file_path = args.squad_questions
+        # Use SQuAD train data for few-shot examples
+        if args.few_shot_examples > 0 and args.examples_file == "../../../../dataset/reduced_fever_data/train.jsonl":
+            args.examples_file = args.squad_evidence
+        # Update output directory
+        if args.output_dir == "results":
+            args.output_dir = "results_squad"
+
     # Setup database config
     db_config = VectorDBConfig(
         host=args.qdrant_host,
@@ -308,7 +360,7 @@ if __name__ == "__main__":
         use_memory=args.qdrant_in_memory
     )
 
-    # Setup chunker
+    # Setup chunker with dataset type
     chunker_type = args.chunker_type
     required_keys = CHUNKER_ARGS[chunker_type]
     chunker_kwargs = {
@@ -316,6 +368,8 @@ if __name__ == "__main__":
         for key in required_keys
         if getattr(args, key) is not None
     }
+    # Add dataset_type to chunker config
+    chunker_kwargs['dataset_type'] = args.dataset_type
     chunker = get_chunker(chunker_type, **chunker_kwargs)
 
     # Setup retrieval config
@@ -341,10 +395,10 @@ if __name__ == "__main__":
         k_values=args.k_retrieval,
         max_claims=args.max_claims,
         output_dir=args.output_dir,
-        overlap=args.chunking_overlap
+        overlap=args.chunking_overlap,
+        dataset_type=args.dataset_type,
     )
 
     # Run the full pipeline
     results = pipeline.run_full_pipeline()
-    print(results)
-    print("Done")
+    print("\nDone!")

@@ -24,6 +24,7 @@ class CustomEDUChunker(BaseChunker):
     - Handles sentences longer than 512 tokens using sliding windows
     - Aggregates predictions across windows using max pooling
     - Maintains comprehensive statistics tracking
+    - Hybrid approach: keeps short sentences intact, only segments long ones
     """
 
     def __init__(
@@ -35,7 +36,7 @@ class CustomEDUChunker(BaseChunker):
         window_stride: int = 256,
         aggregation_method: str = 'avg',
         dataset_type: str = "squad",
-        long_sentence_threshold: int = 60,
+        long_sentence_threshold: int = 50,
         **kwargs
     ):
         """
@@ -49,8 +50,10 @@ class CustomEDUChunker(BaseChunker):
             window_stride: Stride for sliding window (default: 256)
             aggregation_method: How to combine predictions ('max', 'avg', 'vote')
             dataset_type: Either "fever" or "squad"
-                - "fever": Uses annotated_lines with sentence IDs
-                - "squad": Uses simple sentence splitting on cleaned_text
+            long_sentence_threshold: Sentences with more words than this will be segmented into EDUs
+                                    For SQuAD, recommended range: 40-60 words
+                                    - Lower (40): More aggressive segmentation, better for complex sentences
+                                    - Higher (60): Less segmentation, preserves more sentence structure
         """
         print("overlap:", overlap)
         print("edus_per_chunk:", edus_per_chunk)
@@ -58,6 +61,7 @@ class CustomEDUChunker(BaseChunker):
         print(f"max_length: {max_length}, window_stride: {window_stride}")
         print(f"aggregation_method: {aggregation_method}")
         print(f"dataset_type: {dataset_type}")
+        print(f"long_sentence_threshold: {long_sentence_threshold} words")
 
         super().__init__('edu_linear_head', model_path=model_path)
         self.model_path = Path(model_path)
@@ -91,7 +95,6 @@ class CustomEDUChunker(BaseChunker):
 
         print(f"Loading EDU model from: {self.model_path}")
         print(f"Detected model type: {model_type}")
-        print(f"Long sentence threshold: {self.long_sentence_threshold} tokens")
 
         transformers.logging.set_verbosity_error()
         base_model_name = "bert-base-uncased"
@@ -201,7 +204,6 @@ class CustomEDUChunker(BaseChunker):
 
         input_ids = encoding['input_ids'].squeeze()
         if input_ids.dim() == 0:
-            # Single token - just process normally
             return self._predict_single_window(line_text)
         seq_length = len(input_ids)
 
@@ -228,14 +230,10 @@ class CustomEDUChunker(BaseChunker):
             Aggregated predictions for each token
         """
         seq_length = len(input_ids)
-        # Effective window size (excluding special tokens)
         window_size = self.max_length - 2
 
-        # Store predictions for each token position
-        # Each position gets a list of predictions from different windows
         token_predictions = [[] for _ in range(seq_length)]
 
-        # Slide window across sequence
         start = 0
         window_count = 0
 
@@ -243,7 +241,6 @@ class CustomEDUChunker(BaseChunker):
             end = min(start + window_size, seq_length)
             window_ids = input_ids[start:end]
 
-            # Add special tokens
             window_with_special = torch.cat([
                 torch.tensor([self.tokenizer.cls_token_id]),
                 window_ids,
@@ -252,7 +249,6 @@ class CustomEDUChunker(BaseChunker):
 
             attention_mask = torch.ones_like(window_with_special).to(self.device)
 
-            # Get predictions for this window
             with torch.no_grad():
                 outputs = self.model(
                     input_ids=window_with_special,
@@ -261,43 +257,32 @@ class CustomEDUChunker(BaseChunker):
                 logits = outputs.logits
                 predictions = torch.argmax(logits, dim=2).squeeze(0)
 
-            # Handle different prediction dimensions
             if predictions.dim() == 0:
-                # Single scalar prediction (very rare edge case)
                 window_preds = [int(predictions.item())]
             else:
-                # Extract predictions (skip [CLS] and [SEP])
                 pred_slice = predictions[1:-1]
 
-                # Check if the slice resulted in a 0-d tensor
                 if pred_slice.dim() == 0:
                     window_preds = [int(pred_slice.item())]
                 elif pred_slice.numel() == 0:
-                    # Empty tensor after slicing
                     window_preds = []
                 else:
-                    # Normal case: convert to list
                     window_preds = pred_slice.cpu().numpy().tolist()
-                    # Ensure it's a list even if single element
                     if not isinstance(window_preds, list):
                         window_preds = [int(window_preds)]
                     else:
-                        # Ensure all elements are ints
                         window_preds = [int(p) for p in window_preds]
 
-            # Store predictions for corresponding token positions
             for i, pred in enumerate(window_preds):
-                if start + i < seq_length:  # Safety check
+                if start + i < seq_length:
                     token_predictions[start + i].append(int(pred))
 
             window_count += 1
 
-            # Move window
             if end >= seq_length:
                 break
             start += self.window_stride
 
-        # Aggregate predictions across windows
         final_predictions = self._aggregate_predictions(token_predictions)
 
         print(f"  → Processed {window_count} windows for {seq_length} tokens")
@@ -306,7 +291,6 @@ class CustomEDUChunker(BaseChunker):
 
     def _predict_single_window(self, text: str) -> List[int]:
         """Process a single window (short sentence)."""
-        # Handle empty or whitespace-only text
         if not text or not text.strip():
             return []
 
@@ -324,33 +308,25 @@ class CustomEDUChunker(BaseChunker):
         with torch.no_grad():
             outputs = self.model(input_ids=input_ids, attention_mask=attention_mask)
             logits = outputs.logits
-            predictions = torch.argmax(logits, dim=2)  # Shape: [batch, seq]
+            predictions = torch.argmax(logits, dim=2)
 
-        # Remove batch dimension - use squeeze(0) to only remove first dim
-        predictions = predictions.squeeze(0)  # Shape: [seq_len]
+        predictions = predictions.squeeze(0)
 
-        # Handle 0-d tensor case (single prediction)
         if predictions.dim() == 0:
             return [int(predictions.item())]
 
-        # Convert to numpy first, then to list for safety
         pred_array = predictions.cpu().numpy()
         pred_list = pred_array.tolist()
 
-        # Ensure it's actually a list
         if not isinstance(pred_list, list):
             pred_list = [int(pred_list)]
 
-        # Remove [CLS] and [SEP] tokens if we have enough predictions
         if len(pred_list) > 2:
             result = pred_list[1:-1]
-            # Ensure all elements are Python ints, not numpy types
             return [int(x) for x in result]
         elif len(pred_list) == 2:
-            # Just [CLS] and [SEP], no real content
             return []
         elif len(pred_list) == 1:
-            # Single token (shouldn't happen but handle it)
             return [int(pred_list[0])]
 
         return []
@@ -377,21 +353,15 @@ class CustomEDUChunker(BaseChunker):
                 continue
 
             if self.aggregation_method == 'max':
-                # Max pooling: predict boundary if ANY window predicts it
                 final_preds.append(max(preds))
-
             elif self.aggregation_method == 'avg':
-                # Average: predict boundary if average > 0.5
                 avg = sum(preds) / len(preds)
                 final_preds.append(1 if avg > 0.5 else 0)
-
             elif self.aggregation_method == 'vote':
-                # Majority vote
                 ones = sum(preds)
                 zeros = len(preds) - ones
                 final_preds.append(1 if ones > zeros else 0)
             else:
-                # Default to max
                 final_preds.append(max(preds))
 
         return final_preds
@@ -419,14 +389,11 @@ class CustomEDUChunker(BaseChunker):
 
         offsets = encoding['offset_mapping']
 
-        # Handle 0-d tensor case - convert to list first
         if isinstance(offsets, torch.Tensor):
             if offsets.dim() == 0:
-                # Single offset, shouldn't happen but handle it
                 return [line_text]
             offsets = offsets.tolist()
 
-        # Now offsets should be a list
         if len(offsets) != len(predictions):
             print(f"⚠️ Length mismatch: {len(offsets)} offsets vs {len(predictions)} predictions")
             return [line_text]
@@ -456,10 +423,10 @@ class CustomEDUChunker(BaseChunker):
     ) -> List[Tuple[str, int]]:
         """
         Process all lines and extract EDUs with their sentence IDs.
-        Records statistics for each sentence and EDU.
+        Hybrid approach: keeps short sentences intact, only segments long ones.
 
         Returns:
-            List of (edu_text, sentence_id) tuples
+            List of (edu_text_or_sentence, sentence_id) tuples
         """
         all_edus = []
 
@@ -468,9 +435,19 @@ class CustomEDUChunker(BaseChunker):
                 continue
 
             if len(line_text.strip()) == 1:
-                # print(f"⚠️ Skipping single-character line at sentence {sent_id}: '{line_text.strip()}'")
                 continue
-            # Predict EDU boundaries (now handles long sentences)
+
+            # Calculate word count (not BERT tokens)
+            word_count = len(line_text.split())
+
+            # For short sentences: keep as-is (treat as single EDU)
+            if word_count < self.long_sentence_threshold:
+                all_edus.append((line_text.strip(), sent_id))
+                self.stats.record_sentence(line_text.strip(), edu_count=1)
+                self.stats.record_edu(line_text.strip())
+                continue
+
+            # For long sentences: segment into EDUs
             predictions = self.predict_edu_boundaries_for_line(line_text)
 
             if not predictions:
@@ -479,17 +456,13 @@ class CustomEDUChunker(BaseChunker):
                 self.stats.record_edu(line_text.strip())
                 continue
 
-            # Split line into EDUs
             edus = self.split_line_into_edus(line_text, predictions)
 
-            # Count EDU boundaries
             safe_predictions = [int(p) if isinstance(p, torch.Tensor) else p for p in predictions]
             self.boundary_count += sum(safe_predictions)
 
-            # Record sentence statistics
             self.stats.record_sentence(line_text, edu_count=len(edus))
 
-            # Add all EDUs and record each
             for edu in edus:
                 all_edus.append((edu, sent_id))
                 self.stats.record_edu(edu)
@@ -502,6 +475,7 @@ class CustomEDUChunker(BaseChunker):
     ) -> List[Tuple[str, List[int], int]]:
         """
         Combine consecutive EDUs into chunks with overlap.
+        Now properly handles both short sentences (single EDUs) and segmented long sentences.
 
         Returns:
             List of (chunk_text, sentence_ids, edu_count) tuples
@@ -512,7 +486,6 @@ class CustomEDUChunker(BaseChunker):
         chunks = []
 
         if self.overlap == 0:
-            # No overlap: simple chunking
             i = 0
             while i < len(edus_with_ids):
                 window_edus = edus_with_ids[i:i + self.edus_per_chunk]
@@ -521,7 +494,6 @@ class CustomEDUChunker(BaseChunker):
                 chunks.append((chunk_text, sentence_ids, len(window_edus)))
                 i += self.edus_per_chunk
         else:
-            # With overlap: sliding window chunking
             step_size = self.edus_per_chunk - self.overlap
             if step_size <= 0:
                 step_size = 1
@@ -548,8 +520,10 @@ class CustomEDUChunker(BaseChunker):
         **kwargs
     ) -> List[Tuple[str, List[int]]]:
         """
-        Chunk text into EDUs using the trained model with sliding window support.
-        Records comprehensive statistics during processing.
+        Chunk text into EDUs using hybrid approach:
+        - Short sentences: kept intact (sentence-level chunking)
+        - Long sentences: segmented into EDUs
+        - All units (both sentences and EDUs) are combined with overlap
 
         Args:
             cleaned_text: Cleaned text (used for SQuAD)
@@ -570,36 +544,22 @@ class CustomEDUChunker(BaseChunker):
         if not lines:
             return []
 
-        chunks = []
-        long_sentences_with_numbers = []
-        for sent_id, line_text in enumerate(lines):
-            if not line_text or not line_text.strip():
-                continue
+        # Convert to (sent_id, text) tuples
+        lines_with_number = [(i, line) for i, line in enumerate(lines)]
 
-            # Skip single-character lines
-            if len(line_text.strip()) == 1:
-                continue
+        # Process all sentences: short ones stay intact, long ones get segmented
+        # This creates a unified list of EDUs (including full short sentences as single EDUs)
+        edus_with_ids = self.process_lines_to_edus(lines_with_number)
 
-            # Calculate token count (approximate)
-            token_count = len(line_text.split())
+        # Create chunks with overlap from the unified EDU list
+        chunks_with_counts = self.create_chunks_with_overlap(edus_with_ids)
 
-            # For normal-length sentences, keep as-is
-            if token_count < self.long_sentence_threshold:
-                chunks.append((line_text.strip(), [sent_id]))
-                self.stats.record_chunk(line_text.strip(), [sent_id], edu_count=1)
-            else:
-                long_sentences_with_numbers.append((sent_id, line_text))
+        # Record chunk statistics
+        for chunk_text, sentence_ids, edu_count in chunks_with_counts:
+            self.stats.record_chunk(chunk_text, sentence_ids, edu_count=edu_count)
 
-            edus_with_ids = self.process_lines_to_edus(long_sentences_with_numbers)
-
-            chunks_with_counts = self.create_chunks_with_overlap(edus_with_ids)
-
-            for chunk_text, sentence_ids, edu_count in chunks_with_counts:
-                self.stats.record_chunk(chunk_text, sentence_ids, edu_count=edu_count)
-
-            chunks.extend([(chunk_text, sentence_ids) for chunk_text, sentence_ids, _ in chunks_with_counts])
-
-        return chunks
+        # Return without edu_count for backward compatibility
+        return [(chunk_text, sentence_ids) for chunk_text, sentence_ids, _ in chunks_with_counts]
 
     def get_metadata(
         self,
@@ -636,6 +596,7 @@ class CustomEDUChunker(BaseChunker):
             'max_length': self.max_length,
             'window_stride': self.window_stride,
             'aggregation_method': self.aggregation_method,
+            'long_sentence_threshold': self.long_sentence_threshold,
             'model_path': str(self.model_path),
             'cleaned': bool(chunk_text.strip()),
             'dataset_type': self.dataset_type

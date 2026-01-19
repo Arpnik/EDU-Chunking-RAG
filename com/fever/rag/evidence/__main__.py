@@ -1,6 +1,4 @@
 import argparse
-from com.fever.rag.chunker.fixed_char_chunker import FixedCharChunker
-from com.fever.rag.chunker.fixed_token_chunker import FixedTokenChunker
 from com.fever.rag.chunker.sentence_chunker import SentenceChunker
 from com.fever.rag.evidence.vector_db_builder import VectorDBBuilder
 from com.fever.rag.utils.data_helper import VectorDBConfig
@@ -70,8 +68,6 @@ def main():
 
     # Add chunkers (enable as needed)
     builder.add_chunker(SentenceChunker())
-    # builder.add_chunker(FixedCharChunker(size=500, overlap=50))
-    # builder.add_chunker(FixedTokenChunker(size=128, overlap=20))
 
     # Build all databases
     builder.build(reset=args.reset)

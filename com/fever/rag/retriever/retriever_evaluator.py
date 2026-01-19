@@ -549,7 +549,7 @@ def parse_args():
     parser.add_argument(
         "--chunker_type", type=lambda s: ChunkerType(s), choices=list(ChunkerType), default=ChunkerType.CUSTOM_EDU,
     )
-    parser.add_argument("--long_sentence_threshold_for_custom_edu", type=int, default=300,
+    parser.add_argument("--long_sentence_threshold_for_custom_edu", type=int, default=60,
                         help="Long sentence threshold after which it would be broken into edu boundaries" )
     # Retrieval config
     parser.add_argument("--retrieval_strategy", type=lambda s: RetrievalStrategy(s),
