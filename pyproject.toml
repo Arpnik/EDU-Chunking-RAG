@@ -16,6 +16,7 @@ dependencies = [
     "requests>=2.31.0",
     "numpy>=1.24.0",
     "ollama==0.1.7",
+    "scikit-learn>=1.7.2",
     "bert-score>=0.3.13",
     "rouge-score>=0.1.2"
 ]
@@ -24,7 +25,9 @@ dependencies = [
 package-dir = {"" = "."}
 
 [tool.setuptools.packages.find]
+where = ["."]
 include = ["com*"]
+
 
 [tool.uv]
 package = true
