@@ -1,6 +1,6 @@
 # EDU-Chunking-RAG
 Enhancing RAG retrieval with discourse-segmented chunks instead of fixed-length tokens for factual verification
-
+Read the full paper [here](./poster.pdf)
 ![RAG-architecture-diagram](./images/RAG.jpg)
 
 
